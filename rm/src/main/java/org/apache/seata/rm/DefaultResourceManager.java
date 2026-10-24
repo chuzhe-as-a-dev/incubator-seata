@@ -103,6 +103,20 @@ public class DefaultResourceManager implements ResourceManager {
     }
 
     @Override
+    public Long branchRegister(
+            BranchType branchType,
+            String resourceId,
+            String clientId,
+            String xid,
+            String applicationData,
+            String lockKeys,
+            long branchId)
+            throws TransactionException {
+        return getResourceManager(branchType)
+                .branchRegister(branchType, resourceId, clientId, xid, applicationData, lockKeys, branchId);
+    }
+
+    @Override
     public void branchReport(
             BranchType branchType, String xid, long branchId, BranchStatus status, String applicationData)
             throws TransactionException {

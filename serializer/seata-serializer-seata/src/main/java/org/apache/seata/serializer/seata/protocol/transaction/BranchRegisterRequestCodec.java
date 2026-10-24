@@ -42,6 +42,7 @@ public class BranchRegisterRequestCodec extends AbstractTransactionRequestToTCCo
         String resourceId = branchRegisterRequest.getResourceId();
         String lockKey = branchRegisterRequest.getLockKey();
         String applicationData = branchRegisterRequest.getApplicationData();
+        long branchId = branchRegisterRequest.getBranchId();
 
         // 1. xid
         if (xid != null) {
@@ -88,6 +89,9 @@ public class BranchRegisterRequestCodec extends AbstractTransactionRequestToTCCo
         } else {
             out.writeInt(0);
         }
+
+        // 6. caller-given branch id (0 = assigned by the TC)
+        out.writeLong(branchId);
     }
 
     @Override
@@ -121,5 +125,7 @@ public class BranchRegisterRequestCodec extends AbstractTransactionRequestToTCCo
             in.get(bs);
             branchRegisterRequest.setApplicationData(new String(bs, UTF8));
         }
+
+        branchRegisterRequest.setBranchId(in.getLong());
     }
 }

@@ -376,7 +376,8 @@ public class DefaultCoordinator extends AbstractTCInboundHandler implements Tran
                 rpcContext.getClientId(),
                 request.getXid(),
                 request.getApplicationData(),
-                request.getLockKey()));
+                request.getLockKey(),
+                request.getBranchId()));
     }
 
     @Override

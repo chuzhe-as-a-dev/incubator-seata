@@ -92,6 +92,24 @@ public abstract class AbstractCore implements Core {
             String applicationData,
             String lockKeys)
             throws TransactionException {
+        return branchRegister(branchType, resourceId, clientId, xid, applicationData, lockKeys, 0L);
+    }
+
+    /**
+     * Registers a branch. With a caller-given branch id (ACTA: the participant's input message ID) the TC stores
+     * that id instead of generating one, and a repeated registration of the same (xid, branchId) returns the
+     * existing branch instead of adding a second participant; with 0 the TC assigns the id as before.
+     */
+    @Override
+    public Long branchRegister(
+            BranchType branchType,
+            String resourceId,
+            String clientId,
+            String xid,
+            String applicationData,
+            String lockKeys,
+            long callerBranchId)
+            throws TransactionException {
         GlobalSession globalSession = assertGlobalSessionNotNull(xid, false);
         try {
             StringUtils.checkDataSize(applicationData, "applicationData", appDataErrSize, throwDataSizeExp);
@@ -101,11 +119,43 @@ public abstract class AbstractCore implements Core {
                     String.format("Failed to store branch xid = %s ", globalSession.getXid()),
                     e);
         }
+        if (callerBranchId < 0L) {
+            throw new BranchTransactionException(
+                    TransactionExceptionCode.FailedToAddBranch,
+                    String.format(
+                            "Caller-given branch id must be positive, xid = %s branchId = %s",
+                            globalSession.getXid(), callerBranchId));
+        }
 
         return SessionHolder.lockAndExecute(globalSession, () -> {
             globalSessionStatusCheck(globalSession);
-            BranchSession branchSession = SessionHelper.newBranchByGlobal(
-                    globalSession, branchType, resourceId, applicationData, lockKeys, clientId);
+            if (callerBranchId != 0L) {
+                BranchSession existing = globalSession.getBranch(callerBranchId);
+                if (existing != null) {
+                    if (!resourceId.equals(existing.getResourceId())) {
+                        throw new BranchTransactionException(
+                                FailedToAddBranch,
+                                String.format(
+                                        "Branch id %s of xid = %s is already registered by resource %s, not %s",
+                                        callerBranchId, globalSession.getXid(), existing.getResourceId(),
+                                        resourceId));
+                    }
+                    if (LOGGER.isInfoEnabled()) {
+                        LOGGER.info(
+                                "Branch already registered, xid = {}, branchId = {}, resourceId = {}",
+                                globalSession.getXid(),
+                                callerBranchId,
+                                resourceId);
+                    }
+                    return callerBranchId;
+                }
+            }
+            BranchSession branchSession = callerBranchId == 0L
+                    ? SessionHelper.newBranchByGlobal(
+                            globalSession, branchType, resourceId, applicationData, lockKeys, clientId)
+                    : SessionHelper.newBranchByGlobal(
+                            globalSession, branchType, resourceId, applicationData, lockKeys, clientId,
+                            callerBranchId);
             MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
             branchSessionLock(globalSession, branchSession);
             try {

@@ -78,6 +78,31 @@ public abstract class AbstractResourceManager implements ResourceManager {
             String applicationData,
             String lockKeys)
             throws TransactionException {
+        return branchRegister(branchType, resourceId, clientId, xid, applicationData, lockKeys, 0L);
+    }
+
+    /**
+     * registry branch record, with a caller-given branch id (0 = assigned by the TC)
+     *
+     * @param branchType the branch type
+     * @param resourceId the resource id
+     * @param clientId   the client id
+     * @param xid        the xid
+     * @param lockKeys   the lock keys
+     * @param branchId   the caller-given branch id, or 0
+     * @return branchId
+     * @throws TransactionException TransactionException
+     */
+    @Override
+    public Long branchRegister(
+            BranchType branchType,
+            String resourceId,
+            String clientId,
+            String xid,
+            String applicationData,
+            String lockKeys,
+            long branchId)
+            throws TransactionException {
         try {
             StringUtils.checkDataSize(applicationData, "applicationData", appDataErrSize, throwDataSizeExp);
 
@@ -87,6 +112,7 @@ public abstract class AbstractResourceManager implements ResourceManager {
             request.setResourceId(resourceId);
             request.setBranchType(branchType);
             request.setApplicationData(applicationData);
+            request.setBranchId(branchId);
 
             BranchRegisterResponse response =
                     (BranchRegisterResponse) RmNettyRemotingClient.getInstance().sendSyncRequest(request);

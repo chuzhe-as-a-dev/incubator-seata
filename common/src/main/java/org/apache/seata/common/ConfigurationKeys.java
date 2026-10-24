@@ -1289,4 +1289,16 @@ public interface ConfigurationKeys {
     String SONATA_DUMMY_TABLE_SIZE = SONATA_PREFIX + "dummyTableSize";
     String SONATA_S2PL_DUMMY_WRITE_RETRY_WARNING_THRESHOLD = SONATA_PREFIX + "s2plDummyWriteRetryWarningThreshold";
     String SONATA_SSI_HELPER_BATCH_SIZE = SONATA_PREFIX + "ssiHelperBatchSize";
+
+    /**
+     * ACTA (asynchronous transactional workflows on XA): the built-in metadata/protocol logic is enabled per process
+     * by ACTA_ENABLE; branches registered by an ACTA activation carry the ACTA marker and get the extra phase-2
+     * metadata operations, ordinary XA branches of the same process do not.
+     */
+    String ACTA_PREFIX = "acta.";
+    String ACTA_ENABLE = ACTA_PREFIX + "enable";
+    String ACTA_TABLE_PREFIX = ACTA_PREFIX + "tablePrefix";
+    String ACTA_ID_SOURCE_BITS = ACTA_PREFIX + "idSourceBits";
+    String ACTA_ID_TARGET_BITS = ACTA_PREFIX + "idTargetBits";
+    String ACTA_ID_EPOCH_BITS = ACTA_PREFIX + "idEpochBits";
 }

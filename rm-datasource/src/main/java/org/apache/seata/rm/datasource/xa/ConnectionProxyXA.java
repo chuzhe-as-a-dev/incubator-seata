@@ -96,6 +96,12 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
 
     private volatile boolean combine = false;
 
+    /**
+     * Whether the current branch was registered by an ACTA activation (ActaBranchContext): such a branch reports
+     * the yes vote after its prepare and carries the ACTA marker in every report.
+     */
+    private volatile boolean actaBranch = false;
+
     static class BranchAlreadyTerminatedException extends SQLException {
         BranchAlreadyTerminatedException(String message) {
             super(message);
@@ -318,8 +324,24 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             try {
                 // 1. register branch to TC then get the branch message
                 branchRegisterTime = System.currentTimeMillis();
-                branchId = DefaultResourceManager.get()
-                        .branchRegister(BranchType.XA, resource.getResourceId(), null, xid, null, null);
+                Long actaInId = ActaBranchContext.current();
+                if (actaInId != null) {
+                    // ACTA participant (2PC::register(gtid, inId), ACTA paper Figure 3 line 18): the branch is
+                    // registered under the input message ID, which the TC stores and returns, and marked as ACTA.
+                    actaBranch = true;
+                    branchId = DefaultResourceManager.get()
+                            .branchRegister(
+                                    BranchType.XA,
+                                    resource.getResourceId(),
+                                    null,
+                                    xid,
+                                    ActaBranchContext.APPLICATION_DATA,
+                                    null,
+                                    actaInId);
+                } else {
+                    branchId = DefaultResourceManager.get()
+                            .branchRegister(BranchType.XA, resource.getResourceId(), null, xid, null, null);
+                }
             } catch (TransactionException te) {
                 cleanXABranchContext();
                 throw new SQLException(
@@ -446,6 +468,18 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             xaBranchXid = null;
         }
         combine = false;
+        actaBranch = false;
+    }
+
+    /**
+     * Returns the XA transaction identifier of the branch that setAutoCommit(false) registered and started (the
+     * ACTA attempt's tid), or null while no branch is started. It creates no transaction and registers nothing;
+     * call it after the branch started and before the connection is closed.
+     *
+     * @return the XA identifier of the current branch, or null
+     */
+    public XAXid getXaTransactionId() {
+        return xaBranchXid;
     }
 
     private void checkTimeout(Long now) throws XAException {
@@ -492,6 +526,11 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                     if (prepare == XAResource.XA_RDONLY) {
                         // Branch Report to TC: RDONLY
                         reportStatusToTC(BranchStatus.PhaseOne_RDONLY);
+                    } else if (actaBranch) {
+                        // 2PC::voteYes(gtid, inId) (ACTA paper Figure 3 line 46): the yes vote is a real report sent
+                        // right after the successful prepare, and the call returns once the TC replied (A7). A
+                        // failed report is logged by reportStatusToTC and is not a vote.
+                        reportStatusToTC(BranchStatus.PhaseOne_Done);
                     }
                 }
             } catch (XAException xe) {
@@ -591,8 +630,22 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
      * @param status branch status
      */
     private void reportStatusToTC(BranchStatus status) {
+        if (actaBranch && status == BranchStatus.PhaseOne_Failed) {
+            // An ACTA participant that aborts its attempt votes no through the global rollback (2PC::voteNo) and
+            // must still receive the coordinator's decision (finish, Figure 4; a root releases its withheld client
+            // outcome only then, A8). A PhaseOne_Failed branch would be dropped by the TC's rollback instead of
+            // being called back, so the branch stays registered; its XA rollback is idempotent in phase 2.
+            LOGGER.debug("ACTA branch {} aborted its attempt; the decision is awaited from the TC", xaBranchXid);
+            return;
+        }
         try {
-            DefaultResourceManager.get().branchReport(BranchType.XA, xid, xaBranchXid.getBranchId(), status, null);
+            DefaultResourceManager.get()
+                    .branchReport(
+                            BranchType.XA,
+                            xid,
+                            xaBranchXid.getBranchId(),
+                            status,
+                            actaBranch ? ActaBranchContext.APPLICATION_DATA : null);
         } catch (TransactionException te) {
             LOGGER.warn(
                     "Failed to report XA branch {} on {}-{} since {}:{}",

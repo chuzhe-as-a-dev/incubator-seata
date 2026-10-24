@@ -640,4 +640,11 @@ public interface DefaultValues {
     int DEFAULT_SONATA_DUMMY_TABLE_SIZE = 1000000;
     int DEFAULT_SONATA_S2PL_DUMMY_WRITE_RETRY_WARNING_THRESHOLD = 5;
     int DEFAULT_SONATA_SSI_HELPER_BATCH_SIZE = 10;
+
+    boolean DEFAULT_ACTA_ENABLE = false;
+    String DEFAULT_ACTA_TABLE_PREFIX = "acta_";
+    // Message ID layout: 63 value bits = source endpoint | target endpoint | epoch | per-target sequence number.
+    int DEFAULT_ACTA_ID_SOURCE_BITS = 6;
+    int DEFAULT_ACTA_ID_TARGET_BITS = 6;
+    int DEFAULT_ACTA_ID_EPOCH_BITS = 20;
 }

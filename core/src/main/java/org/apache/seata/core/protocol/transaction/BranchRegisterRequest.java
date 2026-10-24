@@ -37,6 +37,12 @@ public class BranchRegisterRequest extends AbstractTransactionRequestToTC {
     private String applicationData;
 
     /**
+     * Branch ID chosen by the caller, or 0 when the TC assigns one. ACTA participants register under their input
+     * message ID so that the branch is identified by (xid, inId) across retries.
+     */
+    private long branchId;
+
+    /**
      * Gets xid.
      *
      * @return the xid
@@ -131,6 +137,24 @@ public class BranchRegisterRequest extends AbstractTransactionRequestToTC {
         this.applicationData = applicationData;
     }
 
+    /**
+     * Gets the caller-given branch id, 0 when the TC assigns one.
+     *
+     * @return the branch id
+     */
+    public long getBranchId() {
+        return branchId;
+    }
+
+    /**
+     * Sets the caller-given branch id; 0 lets the TC assign one.
+     *
+     * @param branchId the branch id
+     */
+    public void setBranchId(long branchId) {
+        this.branchId = branchId;
+    }
+
     @Override
     public AbstractTransactionResponse handle(RpcContext rpcContext) {
         return handler.handle(this, rpcContext);
@@ -145,6 +169,7 @@ public class BranchRegisterRequest extends AbstractTransactionRequestToTC {
         sb.append(", resourceId='").append(resourceId).append('\'');
         sb.append(", lockKey='").append(lockKey).append('\'');
         sb.append(", applicationData='").append(applicationData).append('\'');
+        sb.append(", branchId=").append(branchId);
         sb.append('}');
         return sb.toString();
     }

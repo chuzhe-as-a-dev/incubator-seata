@@ -100,11 +100,36 @@ public class SessionHelper {
             String applicationData,
             String lockKeys,
             String clientId) {
+        return newBranchByGlobal(
+                globalSession, branchType, resourceId, applicationData, lockKeys, clientId,
+                UUIDGenerator.generateUUID());
+    }
+
+    /**
+     * New branch by global branch session, under a given branch id (e.g. an ACTA input message ID).
+     *
+     * @param globalSession   the global session
+     * @param branchType      the branch type
+     * @param resourceId      the resource id
+     * @param applicationData the application data
+     * @param lockKeys        the lock keys
+     * @param clientId        the client id
+     * @param branchId        the branch id
+     * @return the branch session
+     */
+    public static BranchSession newBranchByGlobal(
+            GlobalSession globalSession,
+            BranchType branchType,
+            String resourceId,
+            String applicationData,
+            String lockKeys,
+            String clientId,
+            long branchId) {
         BranchSession branchSession = new BranchSession(branchType);
 
         branchSession.setXid(globalSession.getXid());
         branchSession.setTransactionId(globalSession.getTransactionId());
-        branchSession.setBranchId(UUIDGenerator.generateUUID());
+        branchSession.setBranchId(branchId);
         branchSession.setResourceId(resourceId);
         branchSession.setLockKey(lockKeys);
         branchSession.setClientId(clientId);

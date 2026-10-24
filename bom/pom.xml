@@ -211,6 +211,11 @@
                 <artifactId>seata-rm-datasource</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.apache.seata</groupId>
+                <artifactId>seata-acta</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <!-- the 'seata-server' is an application, not a dependency
             <dependency>
                 <groupId>org.apache.seata</groupId>
