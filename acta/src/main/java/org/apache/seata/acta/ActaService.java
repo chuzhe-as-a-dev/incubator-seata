@@ -57,10 +57,18 @@ public class ActaService implements ActaPhase2Hook {
     public ActaService(DataSource metadataDataSource, DataSourceProxyXA xaDataSource, Dialect dialect,
             InputProcessor.Handler handler, MessageDelivery.Transport transport, ClientOutcomes.Sink clientSink,
             EndpointIds endpoints, Settings settings) {
+        this(metadataDataSource, null, xaDataSource, dialect, handler, transport, clientSink, endpoints, settings);
+    }
+
+    // metadataTxDataSource: an optional second pool over the same database whose connections are permanently in
+    // autocommit=false mode, used for the multi-statement metadata transactions (see MetadataStore.inTransaction).
+    public ActaService(DataSource metadataDataSource, DataSource metadataTxDataSource, DataSourceProxyXA xaDataSource,
+            Dialect dialect, InputProcessor.Handler handler, MessageDelivery.Transport transport,
+            ClientOutcomes.Sink clientSink, EndpointIds endpoints, Settings settings) {
         if (!ActaConfig.enabled()) {
             throw new IllegalStateException("ACTA is disabled in this process (seata.acta.enable)");
         }
-        this.store = new MetadataStore(metadataDataSource, dialect, ActaConfig.tablePrefix());
+        this.store = new MetadataStore(metadataDataSource, metadataTxDataSource, dialect, ActaConfig.tablePrefix());
         this.xa = new XaBranches(metadataDataSource, dialect);
         this.resourceId = xaDataSource.getResourceId();
         this.coordinator = new ActaCoordinator();
@@ -136,7 +144,7 @@ public class ActaService implements ActaPhase2Hook {
     // Records COMMITTING/ABORTING and tells whether an attempt recorded its local transaction (Figure 4 lines 76-83).
     @Override
     public boolean enterPhase2(long inId, boolean commit) {
-        return store.enterPhase2(inId, commit ? Decision.COMMIT : Decision.ABORT) != null;
+        return store.enterPhase2(inId, commit ? Decision.COMMIT : Decision.ABORT);
     }
 
     // Records COMMITTED/ABORTED (Figure 4 lines 85-88); a decision may release a withheld client outcome, so it

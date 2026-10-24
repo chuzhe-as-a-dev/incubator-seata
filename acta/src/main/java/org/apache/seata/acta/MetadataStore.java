@@ -36,7 +36,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 // Durable Inbox, Outbox, Epoch, and RetireWatermark collections of one service, stored in its local database
 // (Section 3.2). Every method is one individual metadata operation or one atomic block, and
@@ -98,6 +100,13 @@ public class MetadataStore {
     private static final Position NONE_RETIRED = new Position(-1, -1);
 
     private final DataSource dataSource;
+    // Pool whose connections are permanently in autocommit=false mode, for the multi-statement metadata transactions:
+    // on it a transaction costs its statements plus one commit, instead of two extra SET autocommit round trips
+    // per transaction. Null means the autocommit pool is used with the toggles (the previous behaviour).
+    private final DataSource txDataSource;
+    // Sources whose retire-watermark row is known to exist (rows are never deleted while the service runs, only by
+    // clearMessages), so receive can skip the insert-ignore that creates it after the first message of a source.
+    private final Set<UUID> watermarkRows = ConcurrentHashMap.newKeySet();
     private final Dialect dialect;
     private final String prefix;
     private final String inbox;
@@ -108,7 +117,12 @@ public class MetadataStore {
     private volatile UUID serviceId;
 
     public MetadataStore(DataSource dataSource, Dialect dialect, String tablePrefix) {
+        this(dataSource, null, dialect, tablePrefix);
+    }
+
+    public MetadataStore(DataSource dataSource, DataSource txDataSource, Dialect dialect, String tablePrefix) {
         this.dataSource = dataSource;
+        this.txDataSource = txDataSource;
         this.dialect = dialect;
         this.prefix = tablePrefix;
         this.inbox = tablePrefix + "inbox";
@@ -246,8 +260,11 @@ public class MetadataStore {
     // is read under a shared row lock held until commit, so no advanceWatermark can commit in between (see
     // NONE_RETIRED).
     public void receive(Message msg) {
+        boolean knownRow = watermarkRows.contains(msg.source());
         inTransaction(connection -> { // atomic
-            ensureWatermarkRow(connection, msg.source(), false);
+            if (!knownRow) {
+                ensureWatermarkRow(connection, msg.source(), false);
+            }
             Optional<Position> watermark = lockWatermarkShared(connection, msg.source());
             if (watermark.isPresent() && msg.pos().compareTo(watermark.get()) <= 0) {
                 return null;
@@ -264,6 +281,7 @@ public class MetadataStore {
             }
             return null;
         });
+        watermarkRows.add(msg.source()); // only once the transaction that created (or found) the row committed
     }
 
     // Atomically records ABORTED for an input whose registration learned an abort, if present (Figure 3 lines 19-22).
@@ -275,23 +293,18 @@ public class MetadataStore {
     // input is absent or already ABORTING or ABORTED (Figure 3 lines 30-38).
     public boolean publishAttempt(long inId, String tid, List<Message> outputs) {
         return inTransaction(connection -> {
-            try (var select = connection.prepareStatement(
-                    "select phase2 from " + inbox + " where id = ? for update")) { // all-or-nothing linearizable transaction
-                select.setLong(1, inId);
-                try (ResultSet rs = select.executeQuery()) {
-                    if (!rs.next()) {
-                        return false;
-                    }
-                    Phase2 phase2 = readEnum(rs.getString(1), Phase2.class);
-                    if (phase2 == Phase2.ABORTING || phase2 == Phase2.ABORTED) {
-                        return false;
-                    }
-                }
-            }
-            try (var update = connection.prepareStatement("update " + inbox + " set tid = ? where id = ?")) { // Record the tid of this attempt onto the input, bind process and subtransaction id (Inbox[in.id].tid)
+            // The check "input present and not ABORTING/ABORTED" and the record of the tid are one conditional
+            // update: the row lock it takes is held to the commit, so the outputs below are written all-or-nothing
+            // with it (lines 30-38); zero matched rows means the input is absent or already aborting/aborted.
+            try (var update = connection.prepareStatement("update " + inbox + " set tid = ? where id = ?"
+                    + " and (phase2 is null or phase2 not in (?, ?))")) {
                 update.setString(1, tid);
                 update.setLong(2, inId);
-                update.executeUpdate();
+                update.setString(3, Phase2.ABORTING.name());
+                update.setString(4, Phase2.ABORTED.name());
+                if (update.executeUpdate() == 0) {
+                    return false;
+                }
             }
             try (var insert = connection.prepareStatement(
                     "insert into " + outbox + " (" + OUTBOX_COLUMNS + ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) { // insert outbox
@@ -315,7 +328,26 @@ public class MetadataStore {
 
     // Atomically enters phase 2 unless already terminal and returns the recorded tid; returns null when the input
     // is absent or has no tid (Figure 4 lines 76-82).
-    public String enterPhase2(long inId, Decision decision) {
+    public boolean enterPhase2(long inId, Decision decision) {
+        Phase2 entering = decision == Decision.COMMIT ? Phase2.COMMITTING : Phase2.ABORTING;
+        // Fast path (the common case: an attempt recorded its tid and no phase-2 state is terminal yet): the
+        // read-check-write of lines 76-83 as one conditional autocommit update. One matched row means an attempt
+        // exists and COMMITTING/ABORTING is recorded. Zero rows cannot tell "no attempt" from "absent" or
+        // "already terminal", so those cases take the previous locking transaction below, which keeps its exact
+        // semantics (they occur only for aborts and for a repeated phase-2 call).
+        int fast = withConnection(connection -> {
+            try (var update = connection.prepareStatement("update " + inbox + " set phase2 = ? where id = ?"
+                    + " and tid is not null and (phase2 is null or phase2 not in (?, ?))")) {
+                update.setString(1, entering.name());
+                update.setLong(2, inId);
+                update.setString(3, Phase2.COMMITTED.name());
+                update.setString(4, Phase2.ABORTED.name());
+                return update.executeUpdate();
+            }
+        });
+        if (fast == 1) {
+            return true;
+        }
         return inTransaction(connection -> {
             String tid;
             Phase2 phase2;
@@ -324,7 +356,7 @@ public class MetadataStore {
                 select.setLong(1, inId);
                 try (ResultSet rs = select.executeQuery()) {
                     if (!rs.next()) {
-                        return null;
+                        return false;
                     }
                     tid = rs.getString(1);
                     phase2 = readEnum(rs.getString(2), Phase2.class);
@@ -332,14 +364,15 @@ public class MetadataStore {
             }
             // Before reaching the final state, write "COMMITTING" or "ABORTING" as decided; once the final state is reached, do not change it.
             if (phase2 != Phase2.COMMITTED && phase2 != Phase2.ABORTED) {
-                Phase2 entering = decision == Decision.COMMIT ? Phase2.COMMITTING : Phase2.ABORTING;
                 try (var update = connection.prepareStatement("update " + inbox + " set phase2 = ? where id = ?")) {
                     update.setString(1, entering.name());
                     update.setLong(2, inId);
                     update.executeUpdate();
                 }
             }
-            return tid; // Regardless of whether the transaction has reached the final state or not, the tid is returned. The caller will then call the "finishTxn" function again.
+            // Whether or not the input already reached a terminal state, an attempt with a recorded local
+            // transaction means the caller must (re)issue DB::finishTxn, which is idempotent.
+            return tid != null;
         });
     }
 
@@ -481,6 +514,7 @@ public class MetadataStore {
 
     // Deletes every inbox, outbox, and watermark row; only for resetting state between benchmark runs.
     public void clearMessages() {
+        watermarkRows.clear();
         withConnection(connection -> {
             for (String table : new String[]{inbox, outbox, watermark}) {
                 try (var stmt = connection.createStatement()) {
@@ -635,6 +669,21 @@ public class MetadataStore {
 
     // Runs an atomic block as one all-or-nothing local transaction over the metadata tables.
     private <T> T inTransaction(SqlFunction<T> body) {
+        if (txDataSource != null) {
+            // The pool hands out connections that are already in autocommit=false mode and stay so: no toggles.
+            try (Connection connection = txDataSource.getConnection()) {
+                try {
+                    T result = body.apply(connection);
+                    connection.commit();
+                    return result;
+                } catch (SQLException | RuntimeException e) {
+                    connection.rollback();
+                    throw e;
+                }
+            } catch (SQLException e) {
+                throw new MetadataException(e);
+            }
+        }
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
