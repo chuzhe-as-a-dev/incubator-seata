@@ -47,8 +47,7 @@ public final class XaBranches {
 
     // DB::isPrepared(tid): whether the branch is currently prepared in the database.
     public boolean isPrepared(String tid) {
-        try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(true);
+        try (Connection connection = dataSource.getConnection()) { // the pool's connections are in autocommit mode
             if (dialect == Dialect.MYSQL) {
                 XAXid xaXid = parse(tid);
                 try (Statement stmt = connection.createStatement(); ResultSet rs = stmt.executeQuery("XA RECOVER")) {

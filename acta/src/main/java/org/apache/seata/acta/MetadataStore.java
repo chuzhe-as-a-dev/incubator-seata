@@ -313,9 +313,17 @@ public class MetadataStore {
                     insert.setLong(8, inId);
                     insert.setString(9, tid);
                     insert.setString(10, Delivery.NEW.name());
-                    insert.addBatch();
+                    if (outputs.size() == 1) {
+                        // A single output (every activation of a one-hop workflow) is one plain insert: MySQL
+                        // Connector/J precedes a batch by a SELECT @@session.transaction_read_only round trip.
+                        insert.executeUpdate();
+                    } else {
+                        insert.addBatch();
+                    }
                 }
-                insert.executeBatch(); // once commit
+                if (outputs.size() > 1) {
+                    insert.executeBatch();
+                }
             }
             return true; //inTransaction submit
         });
@@ -657,10 +665,12 @@ public class MetadataStore {
         return value == null ? null : Enum.valueOf(type, value);
     }
 
-    // Runs an individual metadata operation on an auto-commit connection.
+    // Runs an individual metadata operation on an auto-commit connection. The pool's connections are in
+    // autocommit mode and nothing switches them (inTransaction restores the mode when it has to use this pool), so
+    // the mode is not set here: MySQL Connector/J sends SET autocommit to the server on every call, even when the
+    // value does not change, which cost one round trip per operation.
     private <T> T withConnection(SqlFunction<T> body) {
         try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(true);
             return body.apply(connection);
         } catch (SQLException e) {
             throw new MetadataException(e);

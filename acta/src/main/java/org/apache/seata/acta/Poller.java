@@ -161,8 +161,12 @@ public class Poller {
         return true;
     }
 
-    // Rereads the input and processes it only if it is still pending; otherwise releases it.
-    // readInbox is executed first and then the processing is carried out, rather than directly using the message object when calling receive.
+    // Rereads the input and processes it only if it is still pending; otherwise releases it. The reread is not
+    // optional: a scan is a snapshot, and a row it returned may have been claimed, processed, and released by
+    // another worker before this entry was queued (the scan ran before that attempt's publishAttempt committed),
+    // so the queued entry is stale. Processing it again would register a second branch under the same input ID,
+    // which the coordinator rejects once the workflow is committing, and that rejection must not be mistaken for
+    // an abort decision.
     private void dispatch(long inId) {
         Optional<InboxEntry> current;
         try {
