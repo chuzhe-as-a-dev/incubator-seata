@@ -55,6 +55,19 @@ public class ActaCoordinator {
         }
     }
 
+    // Discards a global transaction nothing was admitted under (the root turned out to be a resubmission or
+    // retired): rolls it back at the coordinator so it does not linger in the coordinator's store; idempotent.
+    public void abandon(String gtid) {
+        while (true) {
+            try {
+                GlobalTransactionContext.reload(gtid).rollback();
+                return;
+            } catch (TransactionException e) {
+                retryLater("abandon " + gtid, e);
+            }
+        }
+    }
+
     // Returns whether a failed branch start (2PC::register) is a definitive rejection, i.e. the coordinator already
     // decided for the workflow, as opposed to a communication failure.
     public static boolean isRejectedRegistration(SQLException failure) {

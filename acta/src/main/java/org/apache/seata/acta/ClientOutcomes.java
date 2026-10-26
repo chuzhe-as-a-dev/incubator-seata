@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 
 // Withheld client output of root inputs (Appendix A.1, Assumption A8): once a root input's global decision has been
 // applied, its outcome is sent asynchronously to the external client; the root input row is the durable client
@@ -41,7 +42,6 @@ public class ClientOutcomes {
     private final MetadataStore store;
     private final Sink sink;
     private final Duration retryDelay;
-    private volatile long retryAfterNanos;
 
     public ClientOutcomes(MetadataStore store, Sink sink, Duration retryDelay) {
         this.store = store;
@@ -49,23 +49,36 @@ public class ClientOutcomes {
         this.retryDelay = retryDelay;
     }
 
-    // Lists decided root inputs whose outcome still has to be sent; empty while backing off after a failed send.
+    // Delay before a send the client did not acknowledge is retried.
+    public Duration retryDelay() {
+        return retryDelay;
+    }
+
+    // Lists the decided root inputs whose outcome still has to be sent: run once at start for the roots an earlier
+    // incarnation decided but could not deliver (A8). While running, completePhase2 hands decided roots over
+    // directly, so this is not polled.
     public List<InboxEntry> pending() {
-        if (System.nanoTime() < retryAfterNanos) {
-            return List.of();
-        }
         return store.listDecidedRoots();
     }
 
-    // Sends the outcome, then removes the root input, which is no longer needed (A8).
-    public void send(InboxEntry root) {
+    // Sends the outcome of a decided root input, then removes the root input, which is no longer needed (A8).
+    // Reads the input's current row: an input that is not a decided root (another kind of input, not decided yet,
+    // or already removed) needs nothing. Returns false only when the send failed and must be retried.
+    public boolean send(long rootId) {
+        Optional<InboxEntry> row = store.readInbox(rootId);
+        if (row.isEmpty() || !Metadata.CLIENT.equals(row.get().message().source())
+                || (row.get().phase2() != Phase2.COMMITTED && row.get().phase2() != Phase2.ABORTED)) {
+            return true;
+        }
+        InboxEntry root = row.get();
         try {
             Decision decision = root.phase2() == Phase2.COMMITTED ? Decision.COMMIT : Decision.ABORT;
             sink.deliver(root.id(), decision, root.message().body());
             store.removeInbox(root.id());
+            return true;
         } catch (RuntimeException e) {
-            retryAfterNanos = System.nanoTime() + retryDelay.toNanos();
             LOGGER.warn("Sending outcome of root input {} failed, will retry: {}", root.id(), e.toString());
+            return false;
         }
     }
 }

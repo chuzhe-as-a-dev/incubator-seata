@@ -258,30 +258,32 @@ public class MetadataStore {
     // Atomically inserts a received message with NULL tid, no-vote, and phase-2 states unless its position is
     // at or below the source's retire watermark or the entry already exists (Figure 5 lines 101-106). The watermark
     // is read under a shared row lock held until commit, so no advanceWatermark can commit in between (see
-    // NONE_RETIRED).
-    public void receive(Message msg) {
+    // NONE_RETIRED). Returns whether the message was inserted: false for a retired position and for a duplicate,
+    // which the insert itself detects (no row counted), so no lookup precedes it.
+    public boolean receive(Message msg) {
         boolean knownRow = watermarkRows.contains(msg.source());
-        inTransaction(connection -> { // atomic
+        boolean inserted = inTransaction(connection -> { // atomic
             if (!knownRow) {
                 ensureWatermarkRow(connection, msg.source(), false);
             }
             Optional<Position> watermark = lockWatermarkShared(connection, msg.source());
             if (watermark.isPresent() && msg.pos().compareTo(watermark.get()) <= 0) {
-                return null;
+                return false;
             }
-            // Remove duplicates during insertion
+            // Deduplicate by ID in the insert itself: a duplicate inserts nothing and counts no row on either
+            // database (MySQL's "insert ignore" reports 0 for a duplicate key even with the found-rows flag).
             String insert = dialect == Dialect.MYSQL //tid, no_vote, phase2 = null
-                    ? "insert into " + inbox + " (" + INBOX_COLUMNS + ") values (?, ?, ?, ?, ?, ?, ?, null, null, null)"
-                            + " on duplicate key update id = id" // MySQL
+                    ? "insert ignore into " + inbox + " (" + INBOX_COLUMNS
+                            + ") values (?, ?, ?, ?, ?, ?, ?, null, null, null)" // MySQL
                     : "insert into " + inbox + " (" + INBOX_COLUMNS + ") values (?, ?, ?, ?, ?, ?, ?, null, null, null)"
                             + " on conflict (id) do nothing"; //PG
             try (var stmt = connection.prepareStatement(insert)) {
                 bindMessage(stmt, msg); // Bind: id, gtid, source, target, epoch, seq, body
-                stmt.executeUpdate();
+                return stmt.executeUpdate() > 0;
             }
-            return null;
         });
         watermarkRows.add(msg.source()); // only once the transaction that created (or found) the row committed
+        return inserted;
     }
 
     // Atomically records ABORTED for an input whose registration learned an abort, if present (Figure 3 lines 19-22).

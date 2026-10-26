@@ -52,6 +52,7 @@ public class ActaService implements ActaPhase2Hook {
     private final InputProcessor processor;
     private final MessageDelivery delivery;
     private final GarbageCollector gc;
+    private final ClientOutcomes outcomes;
     private final Poller poller;
 
     public ActaService(DataSource metadataDataSource, DataSourceProxyXA xaDataSource, Dialect dialect,
@@ -76,10 +77,10 @@ public class ActaService implements ActaPhase2Hook {
                 endpoints, settings.branchTimeout());
         this.delivery = new MessageDelivery(store, xa, coordinator, transport);
         this.gc = new GarbageCollector(store, processor, transport);
-        ClientOutcomes outcomes = new ClientOutcomes(store, clientSink, settings.gcInterval());
+        this.outcomes = new ClientOutcomes(store, clientSink, settings.gcInterval());
         this.poller = new Poller(store, processor, delivery, gc, outcomes, settings.pollInterval(),
                 settings.gcInterval(), settings.workerThreads());
-        delivery.onInboxChanged(poller::wakeUp);
+        delivery.onInboxChanged(poller::dispatch); // receive -> process (Section 3.3)
     }
 
     // Returns the metadata store, e.g. for the service's persistent UUID.
@@ -98,26 +99,27 @@ public class ActaService implements ActaPhase2Hook {
     }
 
     // Root admission (A.1): durably accepts a client's root input under a fresh global transaction and returns once
-    // it is in the Inbox; a resubmission of the same root ID is deduplicated. The client allocates the root's ID and
-    // position (its own endpoint, this service as target, its persisted epoch, and its sequence number) by the same
-    // rule as a service's outputs, and a resubmission carries the same ID and position.
+    // it is in the Inbox; a resubmission of the same root ID is deduplicated by the insert itself, and the global
+    // transaction begun for it is then abandoned (the first submission's is the one in use). The client allocates
+    // the root's ID and position (its own endpoint, this service as target, its persisted epoch, and its sequence
+    // number) by the same rule as a service's outputs, and a resubmission carries the same ID and position.
     public void admit(long rootId, Position pos, byte[] body) {
-        if (store.readInbox(rootId).isPresent()) {
-            return;
-        }
         String gtid = coordinator.begin();
-        delivery.receive(new Message(rootId, gtid, Metadata.CLIENT, store.serviceId(), pos, body));
+        if (!delivery.receive(new Message(rootId, gtid, Metadata.CLIENT, store.serviceId(), pos, body))) {
+            coordinator.abandon(gtid);
+        }
     }
 
     // Starts the service: initialize metadata, make this service's phase-2 operations reachable from the resource
-    // manager, start a new incarnation, then start the workers (Section 3.5). Inputs retained from an earlier
-    // incarnation that no attempt has published are dispatched by the workers like any pending input; inputs with
-    // a recorded attempt are left as they are (no recovery in this version).
+    // manager, start a new incarnation, then start the workers (Section 3.5) with what the previous incarnation left
+    // behind, found by one scan each: inputs no attempt has published (processed like any new input) and decided
+    // root inputs whose outcome was not acknowledged (resent, A8). Inputs with a recorded attempt are left as they
+    // are (no recovery in this version).
     public void start() {
         store.initialize();
         ActaPhase2Hook.Registry.register(resourceId, this);
         processor.startIncarnation();
-        poller.start(List.of());
+        poller.start(store.listPendingInbox(), outcomes.pending());
         LOGGER.info("Acta service {} (resource {}) started in epoch {}", store.serviceId(), resourceId,
                 processor.epoch());
     }
@@ -147,11 +149,11 @@ public class ActaService implements ActaPhase2Hook {
         return store.enterPhase2(inId, commit ? Decision.COMMIT : Decision.ABORT);
     }
 
-    // Records COMMITTED/ABORTED (Figure 4 lines 85-88); a decision may release a withheld client outcome, so it
-    // wakes the poller (A8).
+    // Records COMMITTED/ABORTED (Figure 4 lines 85-88); the decision of a root input releases its withheld client
+    // outcome, which is handed to a worker right here (A8); for any other input the hand-off finds nothing to send.
     @Override
     public void completePhase2(long inId, boolean commit) {
         store.completePhase2IfPresent(inId, commit ? Decision.COMMIT : Decision.ABORT);
-        poller.wakeUp();
+        poller.sendOutcome(inId);
     }
 }

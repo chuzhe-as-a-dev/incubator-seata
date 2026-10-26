@@ -24,6 +24,7 @@ import org.apache.seata.acta.Metadata.Position;
 
 import java.time.Duration;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.UUID;
 
 // Message delivery and receiving of one service (Figure 5): the sender-side deliver procedure driven by the poller,
@@ -46,7 +47,7 @@ public class MessageDelivery {
     private final XaBranches xa;
     private final ActaCoordinator coordinator;
     private final Transport transport;
-    private Runnable inboxChanged = () -> {
+    private Consumer<InboxEntry> inboxChanged = in -> {
     };
 
     public MessageDelivery(MetadataStore store, XaBranches xa, ActaCoordinator coordinator, Transport transport) {
@@ -56,8 +57,9 @@ public class MessageDelivery {
         this.transport = transport;
     }
 
-    // Sets the hook run after receive accepted a message, so the poller dispatches it without waiting a full round.
-    public void onInboxChanged(Runnable hook) {
+    // Sets the hook that receives every accepted input right after it is durable: the inbox dispatcher's
+    // receive -> process hand-off (Section 3.3); the Inbox is not polled.
+    public void onInboxChanged(Consumer<InboxEntry> hook) {
         this.inboxChanged = hook;
     }
 
@@ -101,9 +103,13 @@ public class MessageDelivery {
     Target side (Figure 5 lines 101-106)
      */
 
-    // receive(msg): durably inserts or deduplicates the message, then wakes the poller to dispatch it.
-    public void receive(Message msg) {
-        store.receive(msg); // watermark check + deduplication by ID + insert in the NULL state
-        inboxChanged.run(); // hand it to the inbox dispatcher for its first dispatch
+    // receive(msg): durably inserts or deduplicates the message, then hands a newly inserted input to a worker for
+    // its first (and only) dispatch. Returns false when nothing was inserted: a duplicate or a retired position.
+    public boolean receive(Message msg) {
+        if (!store.receive(msg)) { // watermark check + deduplication by ID + insert in the NULL state
+            return false;
+        }
+        inboxChanged.accept(new InboxEntry(msg, null, null, null));
+        return true;
     }
 }
