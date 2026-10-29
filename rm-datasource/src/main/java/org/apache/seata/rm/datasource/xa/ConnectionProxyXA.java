@@ -567,6 +567,15 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         return prepareTime;
     }
 
+    /**
+     * Returns the XA identifier of the active branch, or null when no branch is active.
+     *
+     * @return the XA branch identifier
+     */
+    public XAXid getXaBranchXid() {
+        return xaBranchXid;
+    }
+
     private void setPrepareTime(Long prepareTime) {
         this.prepareTime = prepareTime;
     }
