@@ -93,6 +93,8 @@ public class RootContext {
 
     public static final String KEY_COMBINE_TRANSACTION_FLAG = "TX_COMBINE";
 
+    public static final String KEY_ACTA_INPUT_ID = "TX_ACTA_INPUT_ID";
+
     public static void setDefaultBranchType(BranchType defaultBranchType) {
         if (defaultBranchType != AT && defaultBranchType != XA) {
             throw new IllegalArgumentException("The default branch type must be " + AT + " or " + XA + "."
@@ -299,5 +301,18 @@ public class RootContext {
 
     public static void unbindCombineTransaction() {
         CONTEXT_HOLDER.remove(KEY_COMBINE_TRANSACTION_FLAG);
+    }
+
+    public static void bindActaInputId(long inputId) {
+        CONTEXT_HOLDER.put(KEY_ACTA_INPUT_ID, inputId);
+    }
+
+    @Nullable
+    public static Long getActaInputId() {
+        return (Long) CONTEXT_HOLDER.get(KEY_ACTA_INPUT_ID);
+    }
+
+    public static void unbindActaInputId() {
+        CONTEXT_HOLDER.remove(KEY_ACTA_INPUT_ID);
     }
 }

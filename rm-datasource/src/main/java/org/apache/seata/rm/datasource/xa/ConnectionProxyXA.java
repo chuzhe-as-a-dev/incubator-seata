@@ -21,6 +21,7 @@ import org.apache.seata.common.lock.ResourceLock;
 import org.apache.seata.common.util.StringUtils;
 import org.apache.seata.config.ConfigurationFactory;
 import org.apache.seata.core.constants.DBType;
+import org.apache.seata.core.context.RootContext;
 import org.apache.seata.core.exception.TransactionException;
 import org.apache.seata.core.model.BranchStatus;
 import org.apache.seata.core.model.BranchType;
@@ -37,6 +38,7 @@ import javax.sql.XAConnection;
 import javax.transaction.xa.XAException;
 import javax.transaction.xa.XAResource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -72,6 +74,16 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             .getInt(SONATA_SSI_HELPER_BATCH_SIZE, DefaultValues.DEFAULT_SONATA_SSI_HELPER_BATCH_SIZE);
 
     private volatile boolean currentAutoCommitStatus = true;
+
+    private volatile long branchId;
+
+    private static final int ACTA_NO_VOTE_VOTING = 0;
+
+    private static final int ACTA_NO_VOTE_VOTED = 1;
+
+    private volatile long actaInputId;
+
+    private volatile boolean actaAbortedBeforePrepare = false;
 
     private volatile XAXid xaBranchXid;
 
@@ -314,24 +326,39 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                         "should NEVER happen: setAutoCommit from true to false while xa branch is active");
             }
             // Start a XA branch
-            long branchId;
+            String applicationData = null;
+            if (DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
+                Long inputId = RootContext.getActaInputId();
+                if (inputId == null) {
+                    throw new SQLException("No ACTA input bound for xa branch of " + xid);
+                }
+                this.actaInputId = inputId;
+                applicationData = String.valueOf(inputId);
+            }
             try {
                 // 1. register branch to TC then get the branch message
                 branchRegisterTime = System.currentTimeMillis();
-                branchId = DefaultResourceManager.get()
-                        .branchRegister(BranchType.XA, resource.getResourceId(), null, xid, null, null);
+                this.branchId = DefaultResourceManager.get()
+                        .branchRegister(BranchType.XA, resource.getResourceId(), null, xid, applicationData, null);
             } catch (TransactionException te) {
                 cleanXABranchContext();
                 throw new SQLException(
                         "failed to register xa branch " + xid + " since " + te.getCode() + ":" + te.getMessage(), te);
             }
-            // 2. build XA-Xid with xid and branchId
-            this.xaBranchXid = XAXidBuilder.build(xid, branchId);
+            // 2. build XA-Xid with xid and branchId, or a fresh one per ACTA attempt
+            this.xaBranchXid = XAXidBuilder.build(
+                    xid,
+                    DataSourceProxyXA.SHOULD_ENABLE_ACTA ? ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE) : branchId);
+            if (DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
+                ((DataSourceProxyXA) resource).UNPREPARED_ACTA_ATTEMPTS.put(xaBranchXid, this);
+            }
             // Keep the Connection if necessary
             keepIfNecessary();
             try {
                 start();
             } catch (XAException e) {
+                recordActaNoVote(ACTA_NO_VOTE_VOTING);
+                voteNo();
                 cleanXABranchContext();
                 throw new SQLException("failed to start xa branch " + xid + " since " + e.getMessage(), e);
             }
@@ -375,6 +402,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         if (!xaActive || this.xaBranchXid == null) {
             throw new SQLException("should NOT rollback on an inactive session");
         }
+        recordActaNoVote(ACTA_NO_VOTE_VOTING);
         try {
             if (!rollBacked) {
                 try {
@@ -397,12 +425,13 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                     LOGGER.debug("Ignore XA rollback on an already closed MySQL connection", e);
                 }
             }
-            // Branch Report to TC
-            reportStatusToTC(BranchStatus.PhaseOne_Failed);
+            voteNo();
             LOGGER.info("{} was rollbacked", xaBranchXid);
         } catch (XAException xe) {
+            // The branch can no longer prepare, as its context is cleaned below
+            voteNo();
             throw new SQLException(
-                    "Failed to end(TMFAIL) xa branch on " + xid + "-" + xaBranchXid.getBranchId() + " since "
+                    "Failed to end(TMFAIL) xa branch on " + xid + "-" + branchId + " since "
                             + xe.getMessage(),
                     xe);
         } finally {
@@ -438,6 +467,10 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     }
 
     private void cleanXABranchContext() {
+        if (DataSourceProxyXA.SHOULD_ENABLE_ACTA && xaBranchXid != null) {
+            ((DataSourceProxyXA) resource).UNPREPARED_ACTA_ATTEMPTS.remove(xaBranchXid, this);
+        }
+        actaAbortedBeforePrepare = false;
         xaEnded = false;
         branchRegisterTime = null;
         prepareTime = null;
@@ -463,6 +496,13 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             }
             try {
                 if (xaActive && this.xaBranchXid != null) {
+                    if (actaAbortedBeforePrepare) {
+                        String xaBranchXid = this.xaBranchXid.toString();
+                        rollback();
+                        throw new SQLException(
+                                "Branch " + xaBranchXid + " was aborted by its global transaction before prepare",
+                                SQLSTATE_XA_NOT_END);
+                    }
                     if (((DataSourceProxyXA) resource).sonataShimEnabled) {
                         sonataPrePrepare();
                     }
@@ -500,6 +540,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                 // The Seata 2.0.0 patch applied this cleanup only to PostgreSQL. It was later generalized to all
                 // databases and may be overly broad; keep the current behavior unless an actual failure requires us to
                 // revisit it.
+                recordActaNoVote(ACTA_NO_VOTE_VOTING);
                 originalConnection.rollback();
                 originalConnection.setAutoCommit(true);
 
@@ -515,10 +556,9 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                     forgetDummyKey(xaBranchXid);
                 }
 
-                // Branch Report to TC: Failed
-                reportStatusToTC(BranchStatus.PhaseOne_Failed);
+                voteNo();
                 throw new SQLException(
-                        "Failed to end(TMSUCCESS)/prepare xa branch on " + xid + "-" + xaBranchXid.getBranchId()
+                        "Failed to end(TMSUCCESS)/prepare xa branch on " + xid + "-" + branchId
                                 + " since " + xe.getMessage(),
                         xe);
             } finally {
@@ -599,17 +639,51 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
      *
      * @param status branch status
      */
-    private void reportStatusToTC(BranchStatus status) {
+    private boolean reportStatusToTC(BranchStatus status) {
         try {
-            DefaultResourceManager.get().branchReport(BranchType.XA, xid, xaBranchXid.getBranchId(), status, null);
+            DefaultResourceManager.get().branchReport(BranchType.XA, xid, branchId, status, null);
+            return true;
         } catch (TransactionException te) {
             LOGGER.warn(
                     "Failed to report XA branch {} on {}-{} since {}:{}",
                     status,
                     xid,
-                    xaBranchXid.getBranchId(),
+                    branchId,
                     te.getCode(),
                     te.getMessage());
+            return false;
+        }
+    }
+
+    private void voteNo() {
+        if (reportStatusToTC(BranchStatus.PhaseOne_Failed)) {
+            recordActaNoVote(ACTA_NO_VOTE_VOTED);
+        }
+    }
+
+    private void recordActaNoVote(int noVote) {
+        if (!DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
+            return;
+        }
+        try (Connection connection = resource.getTargetDataSource().getConnection();
+                PreparedStatement statement =
+                        connection.prepareStatement("update acta_inbox set no_vote = ? where id = ?")) {
+            statement.setInt(1, noVote);
+            statement.setLong(2, actaInputId);
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            LOGGER.warn("Failed to record no vote {} of ACTA input {}", noVote, actaInputId, e);
+        }
+    }
+
+    // A TC rollback of an unprepared attempt: it then fails its prepare and votes no, as XA cannot finish it from here
+    boolean abortBeforePrepare(XAXid tid) {
+        try (ResourceLock ignored = resourceLock.obtain()) {
+            if (!xaActive || xaBranchXid == null || !tid.equals(xaBranchXid)) {
+                return false;
+            }
+            actaAbortedBeforePrepare = true;
+            return true;
         }
     }
 

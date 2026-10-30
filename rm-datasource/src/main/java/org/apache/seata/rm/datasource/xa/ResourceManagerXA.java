@@ -17,6 +17,7 @@
 package org.apache.seata.rm.datasource.xa;
 
 import org.apache.seata.common.DefaultValues;
+import org.apache.seata.common.exception.ShouldNeverHappenException;
 import org.apache.seata.common.lock.ResourceLock;
 import org.apache.seata.common.thread.NamedThreadFactory;
 import org.apache.seata.config.ConfigurationFactory;
@@ -29,7 +30,11 @@ import org.apache.seata.rm.datasource.AbstractDataSourceCacheResourceManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.sql.DataSource;
 import javax.transaction.xa.XAException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
@@ -57,6 +62,11 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
     protected volatile ScheduledExecutorService xaTwoPhaseTimeoutChecker;
 
     private final ResourceLock resourceLock = new ResourceLock();
+
+    private static final int ACTA_PHASE2_COMMITTING = 0;
+    private static final int ACTA_PHASE2_ABORTING = 1;
+    private static final int ACTA_PHASE2_COMMITTED = 2;
+    private static final int ACTA_PHASE2_ABORTED = 3;
 
     @Override
     public void init() {
@@ -144,58 +154,141 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
             String resourceId,
             String applicationData)
             throws TransactionException {
-        XAXid xaBranchXid = XAXidBuilder.build(xid, branchId);
         Resource resource = dataSourceCache.get(resourceId);
-        if (resource instanceof AbstractDataSourceProxyXA) {
-            try (ConnectionProxyXA connectionProxyXA =
-                    ((AbstractDataSourceProxyXA) resource).getConnectionForXAFinish(xaBranchXid)) {
-                if (committed) {
-                    connectionProxyXA.xaCommit(xid, branchId, applicationData);
-                    LOGGER.info(xaBranchXid + " was committed.");
-                    return BranchStatus.PhaseTwo_Committed;
-                } else {
-                    connectionProxyXA.xaRollback(xid, branchId, applicationData);
-                    LOGGER.info(xaBranchXid + " was rollbacked");
-                    return BranchStatus.PhaseTwo_Rollbacked;
-                }
-            } catch (XAException | SQLException sqle) {
-                if (sqle instanceof XAException) {
-                    try {
-                        if (((XAException) sqle).errorCode == XAException.XAER_NOTA) {
-                            if (committed) {
-                                return BranchStatus.PhaseTwo_CommitFailed_XAER_NOTA_Retryable;
-                            } else {
-                                return BranchStatus.PhaseTwo_RollbackFailed_XAER_NOTA_Retryable;
-                            }
-                        } else if (((XAException) sqle).errorCode == XAException.XA_RETRY) {
-                            if (committed) {
-                                return BranchStatus.PhaseTwo_CommitFailed_Retryable;
-                            } else {
-                                return BranchStatus.PhaseTwo_RollbackFailed_Retryable;
-                            }
-                        }
-                    } finally {
-                        BaseDataSourceResource.setBranchStatus(
-                                xaBranchXid.toString(),
-                                committed ? BranchStatus.PhaseTwo_Committed : BranchStatus.PhaseTwo_Rollbacked);
-                    }
-                }
-                if (committed) {
-                    LOGGER.error(xaBranchXid + " commit failed since " + sqle.getMessage(), sqle);
-                    // FIXME: case of PhaseTwo_CommitFailed_Unretryable
-                    return BranchStatus.PhaseTwo_CommitFailed_Retryable;
-                } else {
-                    LOGGER.error(xaBranchXid + " rollback failed since " + sqle.getMessage(), sqle);
-                    // FIXME: case of PhaseTwo_RollbackFailed_Unretryable
-                    return BranchStatus.PhaseTwo_RollbackFailed_Retryable;
-                }
-            }
-        } else {
+        if (!(resource instanceof AbstractDataSourceProxyXA)) {
             LOGGER.error("Unknown Resource for XA resource " + resourceId + " " + resource);
             if (committed) {
                 return BranchStatus.PhaseTwo_CommitFailed_Unretryable;
             } else {
                 return BranchStatus.PhaseTwo_RollbackFailed_Unretryable;
+            }
+        }
+        if (DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
+            return finishActaBranch(committed, (AbstractDataSourceProxyXA) resource, branchId);
+        }
+        return finishXaBranch(committed, (AbstractDataSourceProxyXA) resource, XAXidBuilder.build(xid, branchId));
+    }
+
+    private BranchStatus finishXaBranch(boolean committed, AbstractDataSourceProxyXA resource, XAXid xaBranchXid) {
+        try (ConnectionProxyXA connectionProxyXA = resource.getConnectionForXAFinish(xaBranchXid)) {
+            if (committed) {
+                connectionProxyXA.xaCommit(xaBranchXid.getGlobalXid(), xaBranchXid.getBranchId(), null);
+                LOGGER.info(xaBranchXid + " was committed.");
+                return BranchStatus.PhaseTwo_Committed;
+            } else {
+                connectionProxyXA.xaRollback(xaBranchXid.getGlobalXid(), xaBranchXid.getBranchId(), null);
+                LOGGER.info(xaBranchXid + " was rollbacked");
+                return BranchStatus.PhaseTwo_Rollbacked;
+            }
+        } catch (XAException | SQLException sqle) {
+            if (sqle instanceof XAException) {
+                try {
+                    if (((XAException) sqle).errorCode == XAException.XAER_NOTA) {
+                        if (committed) {
+                            return BranchStatus.PhaseTwo_CommitFailed_XAER_NOTA_Retryable;
+                        } else {
+                            return BranchStatus.PhaseTwo_RollbackFailed_XAER_NOTA_Retryable;
+                        }
+                    } else if (((XAException) sqle).errorCode == XAException.XA_RETRY) {
+                        if (committed) {
+                            return BranchStatus.PhaseTwo_CommitFailed_Retryable;
+                        } else {
+                            return BranchStatus.PhaseTwo_RollbackFailed_Retryable;
+                        }
+                    }
+                } finally {
+                    BaseDataSourceResource.setBranchStatus(
+                            xaBranchXid.toString(),
+                            committed ? BranchStatus.PhaseTwo_Committed : BranchStatus.PhaseTwo_Rollbacked);
+                }
+            }
+            if (committed) {
+                LOGGER.error(xaBranchXid + " commit failed since " + sqle.getMessage(), sqle);
+                // FIXME: case of PhaseTwo_CommitFailed_Unretryable
+                return BranchStatus.PhaseTwo_CommitFailed_Retryable;
+            } else {
+                LOGGER.error(xaBranchXid + " rollback failed since " + sqle.getMessage(), sqle);
+                // FIXME: case of PhaseTwo_RollbackFailed_Unretryable
+                return BranchStatus.PhaseTwo_RollbackFailed_Retryable;
+            }
+        }
+    }
+
+    // ACTA's phase 2 of input branchId: record it in acta_inbox around finishing the input's latest attempt, its tid
+    private BranchStatus finishActaBranch(boolean committed, AbstractDataSourceProxyXA resource, long inputId) {
+        BranchStatus finished = committed ? BranchStatus.PhaseTwo_Committed : BranchStatus.PhaseTwo_Rollbacked;
+        BranchStatus retry =
+                committed ? BranchStatus.PhaseTwo_CommitFailed_Retryable : BranchStatus.PhaseTwo_RollbackFailed_Retryable;
+        DataSource metadata = resource.getTargetDataSource();
+        XAXid tid;
+        try (Connection connection = metadata.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                if (updateActaPhaseTwo(connection, inputId, committed ? ACTA_PHASE2_COMMITTING : ACTA_PHASE2_ABORTING)
+                        == 0) {
+                    connection.commit();
+                    return finished;
+                }
+                tid = selectActaTid(connection, inputId);
+                connection.commit();
+            } catch (SQLException e) {
+                connection.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            LOGGER.error("Failed to start phase 2 of ACTA input " + inputId, e);
+            return retry;
+        }
+
+        BranchStatus status;
+        if (tid == null) {
+            if (committed) {
+                throw new ShouldNeverHappenException("ACTA input " + inputId + " committed without a prepared attempt");
+            }
+            status = finished;
+        } else if (!committed && ((DataSourceProxyXA) resource).abortUnpreparedActaAttempt(tid)) {
+            status = finished;
+        } else {
+            status = finishXaBranch(committed, resource, tid);
+            // An unknown tid has been finished, since it is no longer an unprepared attempt
+            if (status == BranchStatus.PhaseTwo_CommitFailed_XAER_NOTA_Retryable
+                    || status == BranchStatus.PhaseTwo_RollbackFailed_XAER_NOTA_Retryable) {
+                status = finished;
+            }
+        }
+        if (status == finished) {
+            try (Connection connection = metadata.getConnection()) {
+                updateActaPhaseTwo(connection, inputId, committed ? ACTA_PHASE2_COMMITTED : ACTA_PHASE2_ABORTED);
+            } catch (SQLException e) {
+                LOGGER.error("Failed to complete phase 2 of ACTA input " + inputId, e);
+                return retry;
+            }
+        }
+        return status;
+    }
+
+    private static int updateActaPhaseTwo(Connection connection, long inputId, int phase2) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "update acta_inbox set phase2 = ? where id = ? and (phase2 is null or phase2 not in (?, ?))")) {
+            statement.setInt(1, phase2);
+            statement.setLong(2, inputId);
+            statement.setInt(3, ACTA_PHASE2_COMMITTED);
+            statement.setInt(4, ACTA_PHASE2_ABORTED);
+            return statement.executeUpdate();
+        }
+    }
+
+    private static XAXid selectActaTid(Connection connection, long inputId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("select tid from acta_inbox where id = ?")) {
+            statement.setLong(1, inputId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                String tid = resultSet.getString(1);
+                if (tid == null) {
+                    return null;
+                }
+                int separator = tid.lastIndexOf('-');
+                return XAXidBuilder.build(tid.substring(0, separator), Long.parseLong(tid.substring(separator + 1)));
             }
         }
     }

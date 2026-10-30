@@ -41,6 +41,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.seata.common.ConfigurationKeys.ACTA_ENABLED;
 import static org.apache.seata.common.ConfigurationKeys.SONATA_ENABLE_GLOBAL_SERIALIZABILITY;
 
 /**
@@ -55,6 +56,9 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
             .getBoolean(
                     SONATA_ENABLE_GLOBAL_SERIALIZABILITY, DefaultValues.DEFAULT_SONATA_ENABLE_GLOBAL_SERIALIZABILITY);
 
+    static final boolean SHOULD_ENABLE_ACTA =
+            ConfigurationFactory.getInstance().getBoolean(ACTA_ENABLED, DefaultValues.DEFAULT_ACTA_ENABLED);
+
     protected final boolean sonataS2plShimEnabled;
     protected final boolean sonataSsiShimEnabled;
     protected final boolean sonataShimEnabled;
@@ -68,6 +72,9 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
     protected final ConcurrentLinkedQueue<AbstractMap.SimpleEntry<Integer, Integer>>
             RESERVED_DUMMY_KEYS_AND_HELPER_IDS = new ConcurrentLinkedQueue<>();
     protected final ConcurrentMap<XAXid, Integer> XID_TO_HELPER_ID = new ConcurrentHashMap<>();
+
+    // ACTA attempts by tid, from XA start until they prepare or roll back
+    final ConcurrentMap<XAXid, ConnectionProxyXA> UNPREPARED_ACTA_ATTEMPTS = new ConcurrentHashMap<>();
 
     public DataSourceProxyXA(DataSource dataSource) {
         this(dataSource, DEFAULT_RESOURCE_GROUP_ID);
@@ -187,5 +194,10 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
         }
 
         return dataSource.getConnection();
+    }
+
+    boolean abortUnpreparedActaAttempt(XAXid tid) {
+        ConnectionProxyXA attempt = UNPREPARED_ACTA_ATTEMPTS.get(tid);
+        return attempt != null && attempt.abortBeforePrepare(tid);
     }
 }

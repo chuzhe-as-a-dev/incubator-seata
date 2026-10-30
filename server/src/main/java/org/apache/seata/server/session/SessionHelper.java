@@ -104,7 +104,10 @@ public class SessionHelper {
 
         branchSession.setXid(globalSession.getXid());
         branchSession.setTransactionId(globalSession.getTransactionId());
-        branchSession.setBranchId(UUIDGenerator.generateUUID());
+        branchSession.setBranchId(
+                branchType == BranchType.XA && applicationData != null
+                        ? Long.parseLong(applicationData)
+                        : UUIDGenerator.generateUUID());
         branchSession.setResourceId(resourceId);
         branchSession.setLockKey(lockKeys);
         branchSession.setClientId(clientId);

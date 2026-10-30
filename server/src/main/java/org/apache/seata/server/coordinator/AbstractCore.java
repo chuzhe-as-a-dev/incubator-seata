@@ -103,10 +103,13 @@ public abstract class AbstractCore implements Core {
         }
 
         return SessionHolder.lockAndExecute(globalSession, () -> {
-            globalSessionStatusCheck(globalSession);
             BranchSession branchSession = SessionHelper.newBranchByGlobal(
                     globalSession, branchType, resourceId, applicationData, lockKeys, clientId);
             MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
+            if (globalSession.getBranch(branchSession.getBranchId()) != null) {
+                return branchSession.getBranchId();
+            }
+            globalSessionStatusCheck(globalSession);
             branchSessionLock(globalSession, branchSession);
             try {
                 globalSession.addBranch(branchSession);
