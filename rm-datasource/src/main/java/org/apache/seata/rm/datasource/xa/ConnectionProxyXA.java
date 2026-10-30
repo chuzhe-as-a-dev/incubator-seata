@@ -23,6 +23,7 @@ import org.apache.seata.config.ConfigurationFactory;
 import org.apache.seata.core.constants.DBType;
 import org.apache.seata.core.context.RootContext;
 import org.apache.seata.core.exception.TransactionException;
+import org.apache.seata.core.exception.TransactionExceptionCode;
 import org.apache.seata.core.model.BranchStatus;
 import org.apache.seata.core.model.BranchType;
 import org.apache.seata.rm.BaseDataSourceResource;
@@ -341,6 +342,9 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                 this.branchId = DefaultResourceManager.get()
                         .branchRegister(BranchType.XA, resource.getResourceId(), null, xid, applicationData, null);
             } catch (TransactionException te) {
+                if (DataSourceProxyXA.SHOULD_ENABLE_ACTA && isRegistrationRejected(te)) {
+                    recordActaAborted();
+                }
                 cleanXABranchContext();
                 throw new SQLException(
                         "failed to register xa branch " + xid + " since " + te.getCode() + ":" + te.getMessage(), te);
@@ -658,6 +662,21 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     private void voteNo() {
         if (reportStatusToTC(BranchStatus.PhaseOne_Failed)) {
             recordActaNoVote(ACTA_NO_VOTE_VOTED);
+        }
+    }
+
+    // The TC rejects a registration only after its global transaction has aborted
+    private static boolean isRegistrationRejected(TransactionException te) {
+        return te.getCode() == TransactionExceptionCode.GlobalTransactionNotExist
+                || te.getCode() == TransactionExceptionCode.GlobalTransactionNotActive
+                || te.getCode() == TransactionExceptionCode.GlobalTransactionStatusInvalid;
+    }
+
+    private void recordActaAborted() {
+        try (Connection connection = resource.getTargetDataSource().getConnection()) {
+            ResourceManagerXA.updateActaPhaseTwo(connection, actaInputId, ResourceManagerXA.ACTA_PHASE2_ABORTED);
+        } catch (SQLException e) {
+            LOGGER.warn("Failed to record the abort of ACTA input {}", actaInputId, e);
         }
     }
 

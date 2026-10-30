@@ -66,7 +66,7 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
     private static final int ACTA_PHASE2_COMMITTING = 0;
     private static final int ACTA_PHASE2_ABORTING = 1;
     private static final int ACTA_PHASE2_COMMITTED = 2;
-    private static final int ACTA_PHASE2_ABORTED = 3;
+    static final int ACTA_PHASE2_ABORTED = 3;
 
     @Override
     public void init() {
@@ -267,7 +267,7 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
         return status;
     }
 
-    private static int updateActaPhaseTwo(Connection connection, long inputId, int phase2) throws SQLException {
+    static int updateActaPhaseTwo(Connection connection, long inputId, int phase2) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "update acta_inbox set phase2 = ? where id = ? and (phase2 is null or phase2 not in (?, ?))")) {
             statement.setInt(1, phase2);
