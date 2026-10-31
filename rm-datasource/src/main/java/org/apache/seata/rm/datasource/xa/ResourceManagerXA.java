@@ -221,19 +221,17 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
                 committed ? BranchStatus.PhaseTwo_CommitFailed_Retryable : BranchStatus.PhaseTwo_RollbackFailed_Retryable;
         DataSource metadata = resource.getTargetDataSource();
         XAXid tid;
-        try (Connection connection = metadata.getConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                if (updateActaPhaseTwo(connection, inputId, committed ? ACTA_PHASE2_COMMITTING : ACTA_PHASE2_ABORTING)
-                        == 0) {
-                    connection.commit();
+        try (Connection connection = metadata.getConnection();
+                PreparedStatement statement = connection.prepareStatement("call acta_start_phase2(?, ?)")) {
+            statement.setLong(1, inputId);
+            statement.setInt(2, committed ? ACTA_PHASE2_COMMITTING : ACTA_PHASE2_ABORTING);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                if (!resultSet.getBoolean("started")) {
                     return finished;
                 }
-                tid = selectActaTid(connection, inputId);
-                connection.commit();
-            } catch (SQLException e) {
-                connection.rollback();
-                throw e;
+                String latestTid = resultSet.getString("latest_tid");
+                tid = latestTid == null ? null : XAXidBuilder.parse(latestTid);
             }
         } catch (SQLException e) {
             LOGGER.error("Failed to start phase 2 of ACTA input " + inputId, e);
@@ -275,17 +273,6 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
             statement.setInt(3, ACTA_PHASE2_COMMITTED);
             statement.setInt(4, ACTA_PHASE2_ABORTED);
             return statement.executeUpdate();
-        }
-    }
-
-    private static XAXid selectActaTid(Connection connection, long inputId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("select tid from acta_inbox where id = ?")) {
-            statement.setLong(1, inputId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                resultSet.next();
-                String tid = resultSet.getString(1);
-                return tid == null ? null : XAXidBuilder.parse(tid);
-            }
         }
     }
 }
