@@ -30,6 +30,7 @@ import org.apache.seata.rm.BaseDataSourceResource;
 import org.apache.seata.rm.DefaultResourceManager;
 import org.apache.seata.rm.datasource.util.SeataXAResource;
 import org.apache.seata.sqlparser.util.JdbcConstants;
+import org.apache.seata.tm.TransactionManagerHolder;
 import org.postgresql.xa.PGXAException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -361,8 +362,9 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             try {
                 start();
             } catch (XAException e) {
-                recordActaNoVote(ACTA_NO_VOTE_VOTING);
-                voteNo();
+                if (recordActaNoVote(ACTA_NO_VOTE_VOTING)) {
+                    voteNo();
+                }
                 cleanXABranchContext();
                 throw new SQLException("failed to start xa branch " + xid + " since " + e.getMessage(), e);
             }
@@ -406,7 +408,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         if (!xaActive || this.xaBranchXid == null) {
             throw new SQLException("should NOT rollback on an inactive session");
         }
-        recordActaNoVote(ACTA_NO_VOTE_VOTING);
+        boolean votingNoRecorded = recordActaNoVote(ACTA_NO_VOTE_VOTING);
         try {
             if (!rollBacked) {
                 try {
@@ -429,11 +431,15 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                     LOGGER.debug("Ignore XA rollback on an already closed MySQL connection", e);
                 }
             }
-            voteNo();
+            if (votingNoRecorded) {
+                voteNo();
+            }
             LOGGER.info("{} was rollbacked", xaBranchXid);
         } catch (XAException xe) {
             // The branch can no longer prepare, as its context is cleaned below
-            voteNo();
+            if (votingNoRecorded) {
+                voteNo();
+            }
             throw new SQLException(
                     "Failed to end(TMFAIL) xa branch on " + xid + "-" + branchId + " since "
                             + xe.getMessage(),
@@ -544,7 +550,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                 // The Seata 2.0.0 patch applied this cleanup only to PostgreSQL. It was later generalized to all
                 // databases and may be overly broad; keep the current behavior unless an actual failure requires us to
                 // revisit it.
-                recordActaNoVote(ACTA_NO_VOTE_VOTING);
+                boolean votingNoRecorded = recordActaNoVote(ACTA_NO_VOTE_VOTING);
                 originalConnection.rollback();
                 originalConnection.setAutoCommit(true);
 
@@ -560,7 +566,9 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                     forgetDummyKey(xaBranchXid);
                 }
 
-                voteNo();
+                if (votingNoRecorded) {
+                    voteNo();
+                }
                 throw new SQLException(
                         "Failed to end(TMSUCCESS)/prepare xa branch on " + xid + "-" + branchId
                                 + " since " + xe.getMessage(),
@@ -660,8 +668,18 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     }
 
     private void voteNo() {
-        if (reportStatusToTC(BranchStatus.PhaseOne_Failed)) {
+        if (reportStatusToTC(BranchStatus.PhaseOne_Failed) && DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
             recordActaNoVote(ACTA_NO_VOTE_VOTED);
+            rollbackActaGlobalTransaction();
+        }
+    }
+
+    // The TC keeps a global transaction with a no vote open, so abort it as if the TC did
+    private void rollbackActaGlobalTransaction() {
+        try {
+            TransactionManagerHolder.get().rollback(xid);
+        } catch (TransactionException e) {
+            LOGGER.warn("Failed to roll back {} after its no vote", xid, e);
         }
     }
 
@@ -680,9 +698,10 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         }
     }
 
-    private void recordActaNoVote(int noVote) {
+    // Returns whether the no vote may follow, which needs a durable VOTING
+    private boolean recordActaNoVote(int noVote) {
         if (!DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
-            return;
+            return true;
         }
         try (Connection connection = resource.getTargetDataSource().getConnection();
                 PreparedStatement statement =
@@ -690,8 +709,10 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             statement.setInt(1, noVote);
             statement.setLong(2, actaInputId);
             statement.executeUpdate();
+            return true;
         } catch (SQLException e) {
-            LOGGER.warn("Failed to record no vote {} of ACTA input {}", noVote, actaInputId, e);
+            LOGGER.error("Failed to record no vote {} of ACTA input {}", noVote, actaInputId, e);
+            return false;
         }
     }
 

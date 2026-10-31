@@ -31,4 +31,10 @@ public class XAXidBuilder {
     public static final XAXid build(byte[] globalTransactionId, byte[] branchQualifier) {
         return new XABranchXid(globalTransactionId, branchQualifier);
     }
+
+    // Inverse of XAXid.toString
+    public static XAXid parse(String xaBranchXid) {
+        int separator = xaBranchXid.lastIndexOf('-');
+        return build(xaBranchXid.substring(0, separator), Long.parseLong(xaBranchXid.substring(separator + 1)));
+    }
 }

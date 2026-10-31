@@ -284,11 +284,7 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
             try (ResultSet resultSet = statement.executeQuery()) {
                 resultSet.next();
                 String tid = resultSet.getString(1);
-                if (tid == null) {
-                    return null;
-                }
-                int separator = tid.lastIndexOf('-');
-                return XAXidBuilder.build(tid.substring(0, separator), Long.parseLong(tid.substring(separator + 1)));
+                return tid == null ? null : XAXidBuilder.parse(tid);
             }
         }
     }
