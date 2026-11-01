@@ -154,6 +154,7 @@ public class SessionHelper {
                 globalSession.changeGlobalStatus(GlobalStatus.Committed);
             }
             globalSession.end();
+            ActaOutcomes.record(globalSession, "COMMITTED");
             if (!DELAY_HANDLE_SESSION) {
                 MetricsPublisher.postSessionDoneEvent(globalSession, retryGlobal, false);
             }
@@ -228,6 +229,7 @@ public class SessionHelper {
                 globalSession.changeGlobalStatus(GlobalStatus.Rollbacked);
             }
             globalSession.end();
+            ActaOutcomes.record(globalSession, "ABORTED");
             if (!DELAY_HANDLE_SESSION && !timeoutDone) {
                 MetricsPublisher.postSessionDoneEvent(globalSession, retryGlobal, false);
             }
