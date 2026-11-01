@@ -393,6 +393,10 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             if (!xaActive || this.xaBranchXid == null) {
                 throw new SQLException("should NOT commit on an inactive session", SQLSTATE_XA_NOT_END);
             }
+            // An ACTA attempt is one local transaction, so a failed prepare can fail its commit instead of its close
+            if (DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
+                endAndPrepare();
+            }
         }
     }
 
@@ -505,74 +509,10 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                 return;
             }
             try {
-                if (xaActive && this.xaBranchXid != null) {
-                    if (actaAbortedBeforePrepare) {
-                        String xaBranchXid = this.xaBranchXid.toString();
-                        rollback();
-                        throw new SQLException(
-                                "Branch " + xaBranchXid + " was aborted by its global transaction before prepare",
-                                SQLSTATE_XA_NOT_END);
-                    }
-                    if (((DataSourceProxyXA) resource).sonataShimEnabled) {
-                        sonataPrePrepare();
-                    }
-
-                    long now = System.currentTimeMillis();
-                    try {
-                        end(XAResource.TMSUCCESS);
-                        checkTimeout(now);
-                    } catch (BranchAlreadyTerminatedException terminated) {
-                        // TM may decide to roll back after RM ended the branch but before RM prepared it. Preparing the
-                        // branch gives the TC's rollback retry a stable XA branch to finish.
-                        LOGGER.warn(terminated.getMessage());
-                    } catch (SQLException sqle) {
-                        // Rollback immediately before the XA Branch Context is deleted.
-                        String xaBranchXid = this.xaBranchXid.toString();
-                        rollback();
-                        throw new SQLException(
-                                "Branch " + xaBranchXid + " was rollbacked on committing since " + sqle.getMessage(),
-                                SQLSTATE_XA_NOT_END,
-                                sqle);
-                    }
-                    setPrepareTime(now);
-                    int prepare = xaResource.prepare(xaBranchXid);
-                    // Based on the four databases: MySQL (8), Oracle (12c), Postgres (16), and MSSQL Server (2022),
-                    // only Oracle has read-only optimization; the others do not provide read-only feedback.
-                    // Therefore, the database type check can be eliminated here.
-                    if (prepare == XAResource.XA_RDONLY) {
-                        // Branch Report to TC: RDONLY
-                        reportStatusToTC(BranchStatus.PhaseOne_RDONLY);
-                    }
+                // ACTA has prepared on commit
+                if (!DataSourceProxyXA.SHOULD_ENABLE_ACTA && xaActive && this.xaBranchXid != null) {
+                    endAndPrepare();
                 }
-            } catch (XAException xe) {
-                // Some drivers (e.g., PG) do not automatically roll back and reset autocommit when failing to prepare,
-                // which would cause the later reuse of the connection to fail at init(). Thus, we do it manually.
-                // The Seata 2.0.0 patch applied this cleanup only to PostgreSQL. It was later generalized to all
-                // databases and may be overly broad; keep the current behavior unless an actual failure requires us to
-                // revisit it.
-                boolean votingNoRecorded = recordActaNoVote(ACTA_NO_VOTE_VOTING);
-                originalConnection.rollback();
-                originalConnection.setAutoCommit(true);
-
-                if (((DataSourceProxyXA) resource).sonataShimEnabled) {
-                    if (((DataSourceProxyXA) resource).sonataSsiShimEnabled) {
-                        try {
-                            releaseHelperTxn(xaBranchXid);
-                        } catch (XAException ignored2) {
-                            // On the RM side, a missing prepared helper txn is only caused by TM-initiated rollback. No
-                            // action needed.
-                        }
-                    }
-                    forgetDummyKey(xaBranchXid);
-                }
-
-                if (votingNoRecorded) {
-                    voteNo();
-                }
-                throw new SQLException(
-                        "Failed to end(TMSUCCESS)/prepare xa branch on " + xid + "-" + branchId
-                                + " since " + xe.getMessage(),
-                        xe);
             } finally {
                 cleanXABranchContext();
                 rollBacked = false;
@@ -582,6 +522,79 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
                     originalConnection.close();
                 }
             }
+        }
+    }
+
+    private void endAndPrepare() throws SQLException {
+        try {
+            if (actaAbortedBeforePrepare) {
+                String xaBranchXid = this.xaBranchXid.toString();
+                rollback();
+                throw new SQLException(
+                        "Branch " + xaBranchXid + " was aborted by its global transaction before prepare",
+                        SQLSTATE_XA_NOT_END);
+            }
+            if (((DataSourceProxyXA) resource).sonataShimEnabled) {
+                sonataPrePrepare();
+            }
+
+            long now = System.currentTimeMillis();
+            try {
+                end(XAResource.TMSUCCESS);
+                checkTimeout(now);
+            } catch (BranchAlreadyTerminatedException terminated) {
+                // TM may decide to roll back after RM ended the branch but before RM prepared it. Preparing the
+                // branch gives the TC's rollback retry a stable XA branch to finish.
+                LOGGER.warn(terminated.getMessage());
+            } catch (SQLException sqle) {
+                // Rollback immediately before the XA Branch Context is deleted.
+                String xaBranchXid = this.xaBranchXid.toString();
+                rollback();
+                throw new SQLException(
+                        "Branch " + xaBranchXid + " was rollbacked on committing since " + sqle.getMessage(),
+                        SQLSTATE_XA_NOT_END,
+                        sqle);
+            }
+            setPrepareTime(now);
+            int prepare = xaResource.prepare(xaBranchXid);
+            // Based on the four databases: MySQL (8), Oracle (12c), Postgres (16), and MSSQL Server (2022),
+            // only Oracle has read-only optimization; the others do not provide read-only feedback.
+            // Therefore, the database type check can be eliminated here.
+            if (prepare == XAResource.XA_RDONLY) {
+                // Branch Report to TC: RDONLY
+                reportStatusToTC(BranchStatus.PhaseOne_RDONLY);
+            }
+        } catch (XAException xe) {
+            // Some drivers (e.g., PG) do not automatically roll back and reset autocommit when failing to prepare,
+            // which would cause the later reuse of the connection to fail at init(). Thus, we do it manually.
+            // The Seata 2.0.0 patch applied this cleanup only to PostgreSQL. It was later generalized to all
+            // databases and may be overly broad; keep the current behavior unless an actual failure requires us to
+            // revisit it.
+            boolean votingNoRecorded = recordActaNoVote(ACTA_NO_VOTE_VOTING);
+            originalConnection.rollback();
+            originalConnection.setAutoCommit(true);
+
+            if (((DataSourceProxyXA) resource).sonataShimEnabled) {
+                if (((DataSourceProxyXA) resource).sonataSsiShimEnabled) {
+                    try {
+                        releaseHelperTxn(xaBranchXid);
+                    } catch (XAException ignored2) {
+                        // On the RM side, a missing prepared helper txn is only caused by TM-initiated rollback. No
+                        // action needed.
+                    }
+                }
+                forgetDummyKey(xaBranchXid);
+            }
+
+            if (votingNoRecorded) {
+                voteNo();
+            }
+            throw new SQLException(
+                    "Failed to end(TMSUCCESS)/prepare xa branch on " + xid + "-" + branchId
+                            + " since " + xe.getMessage(),
+                    xe);
+        } finally {
+            cleanXABranchContext();
         }
     }
 
