@@ -393,10 +393,8 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             if (!xaActive || this.xaBranchXid == null) {
                 throw new SQLException("should NOT commit on an inactive session", SQLSTATE_XA_NOT_END);
             }
-            // An ACTA attempt is one local transaction, so a failed prepare can fail its commit instead of its close
-            if (DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
-                endAndPrepare();
-            }
+            // Preparing on commit fails the commit on a failed prepare, unlike a close whose exception Spring swallows
+            endAndPrepare();
         }
     }
 
@@ -508,19 +506,12 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             if (combine) {
                 return;
             }
-            try {
-                // ACTA has prepared on commit
-                if (!DataSourceProxyXA.SHOULD_ENABLE_ACTA && xaActive && this.xaBranchXid != null) {
-                    endAndPrepare();
-                }
-            } finally {
-                cleanXABranchContext();
-                rollBacked = false;
-                if (isHeld() && shouldBeHeld()) {
-                    // if kept by a keeper, just hold the connection.
-                } else {
-                    originalConnection.close();
-                }
+            cleanXABranchContext();
+            rollBacked = false;
+            if (isHeld() && shouldBeHeld()) {
+                // if kept by a keeper, just hold the connection.
+            } else {
+                originalConnection.close();
             }
         }
     }
