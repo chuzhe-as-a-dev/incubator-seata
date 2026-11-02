@@ -28,7 +28,17 @@
             <plugins>
                 <plugin groupId="icu.easyj.maven.plugins" artifactId="easyj-maven-plugin"/>
                 <plugin groupId="org.apache.maven.plugins" artifactId="maven-install-plugin"/>
+                <!-- The cache keeps only attached artifacts, so the TC's unattached executable jar is rebuilt -->
+                <plugin groupId="org.springframework.boot" artifactId="spring-boot-maven-plugin"/>
             </plugins>
+            <executions>
+                <!-- Likewise, the TC's runtime dependencies are copied again -->
+                <execution artifactId="maven-dependency-plugin">
+                    <execIds>
+                        <execId>copy-dependencies</execId>
+                    </execIds>
+                </execution>
+            </executions>
         </runAlways>
     </executionControl>
 </cache>
