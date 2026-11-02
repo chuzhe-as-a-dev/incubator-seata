@@ -1292,4 +1292,5 @@ public interface ConfigurationKeys {
 
     String ACTA_PREFIX = "acta.";
     String ACTA_ENABLED = ACTA_PREFIX + "enabled";
+    String ACTA_REDIS = ACTA_PREFIX + "redis";
 }

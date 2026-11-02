@@ -29,6 +29,7 @@ import org.apache.seata.server.coordinator.DefaultCoordinator;
 import org.apache.seata.server.instance.SeataInstanceStrategy;
 import org.apache.seata.server.lock.LockerManagerFactory;
 import org.apache.seata.server.metrics.MetricsManager;
+import org.apache.seata.server.session.ActaOutcomes;
 import org.apache.seata.server.session.SessionHolder;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationListener;
@@ -103,6 +104,7 @@ public class Server {
         }
         // log store mode : file, db, redis
         SessionHolder.init();
+        ActaOutcomes.init();
         LockerManagerFactory.init();
         coordinator.init();
         nettyRemotingServer.setHandler(coordinator);
