@@ -95,6 +95,8 @@ public class RootContext {
 
     public static final String KEY_ACTA_INPUT_ID = "TX_ACTA_INPUT_ID";
 
+    public static final String KEY_ACTA_FAILURE = "TX_ACTA_FAILURE";
+
     public static void setDefaultBranchType(BranchType defaultBranchType) {
         if (defaultBranchType != AT && defaultBranchType != XA) {
             throw new IllegalArgumentException("The default branch type must be " + AT + " or " + XA + "."
@@ -314,5 +316,19 @@ public class RootContext {
 
     public static void unbindActaInputId() {
         CONTEXT_HOLDER.remove(KEY_ACTA_INPUT_ID);
+    }
+
+    // Why the ACTA input failed, which its no vote carries to the TC
+    public static void bindActaFailure(String failure) {
+        CONTEXT_HOLDER.put(KEY_ACTA_FAILURE, failure);
+    }
+
+    @Nullable
+    public static String getActaFailure() {
+        return (String) CONTEXT_HOLDER.get(KEY_ACTA_FAILURE);
+    }
+
+    public static void unbindActaFailure() {
+        CONTEXT_HOLDER.remove(KEY_ACTA_FAILURE);
     }
 }

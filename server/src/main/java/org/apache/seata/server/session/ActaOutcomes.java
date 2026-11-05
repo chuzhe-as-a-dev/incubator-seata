@@ -24,6 +24,8 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.net.URI;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.seata.common.ConfigurationKeys.ACTA_ENABLED;
 import static org.apache.seata.common.ConfigurationKeys.ACTA_REDIS;
@@ -36,6 +38,8 @@ public final class ActaOutcomes {
     private static final String ACTA_TRANSACTION_NAME_PREFIX = "acta-";
     // Null unless ACTA is enabled
     private static JedisPool redis;
+    // Lost on a restart of the TC, after which the outcome falls back to ABORTED
+    private static final Map<String, String> FAILURES = new ConcurrentHashMap<>();
 
     private ActaOutcomes() {}
 
@@ -46,16 +50,25 @@ public final class ActaOutcomes {
         }
     }
 
+    // A branch's no vote, which the outcome of its aborted global transaction reports in place of ABORTED
+    public static void recordFailure(String xid, String failure) {
+        if (redis != null) {
+            FAILURES.put(xid, failure);
+        }
+    }
+
     // The message is "<xid>,<outcome>"
     static void publish(GlobalSession session, String outcome) {
+        String failure = FAILURES.remove(session.getXid());
         String name = session.getTransactionName();
         if (redis == null || name == null || !name.startsWith(ACTA_TRANSACTION_NAME_PREFIX)) {
             return;
         }
+        String published = failure != null ? failure : outcome;
         try (Jedis jedis = redis.getResource()) {
-            jedis.publish(CHANNEL, session.getXid() + "," + outcome);
+            jedis.publish(CHANNEL, session.getXid() + "," + published);
         } catch (RuntimeException e) {
-            LOGGER.error("Failed to publish the outcome {} of {}", outcome, session.getXid(), e);
+            LOGGER.error("Failed to publish the outcome {} of {}", published, session.getXid(), e);
         }
     }
 }

@@ -656,8 +656,12 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
      * @param status branch status
      */
     private boolean reportStatusToTC(BranchStatus status) {
+        return reportStatusToTC(status, null);
+    }
+
+    private boolean reportStatusToTC(BranchStatus status, String applicationData) {
         try {
-            DefaultResourceManager.get().branchReport(BranchType.XA, xid, branchId, status, null);
+            DefaultResourceManager.get().branchReport(BranchType.XA, xid, branchId, status, applicationData);
             return true;
         } catch (TransactionException te) {
             LOGGER.warn(
@@ -672,7 +676,8 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     }
 
     private void voteNo() {
-        if (reportStatusToTC(BranchStatus.PhaseOne_Failed) && DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
+        if (reportStatusToTC(BranchStatus.PhaseOne_Failed, RootContext.getActaFailure())
+                && DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
             recordActaNoVote(ACTA_NO_VOTE_VOTED);
             rollbackActaGlobalTransaction();
         }

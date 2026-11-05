@@ -36,6 +36,7 @@ import org.apache.seata.core.protocol.transaction.BranchRollbackResponse;
 import org.apache.seata.core.rpc.RemotingServer;
 import org.apache.seata.server.lock.LockManager;
 import org.apache.seata.server.lock.LockerManagerFactory;
+import org.apache.seata.server.session.ActaOutcomes;
 import org.apache.seata.server.session.BranchSession;
 import org.apache.seata.server.session.GlobalSession;
 import org.apache.seata.server.session.SessionHelper;
@@ -180,6 +181,9 @@ public abstract class AbstractCore implements Core {
         }
         branchSession.setApplicationData(applicationData);
         globalSession.changeBranchStatus(branchSession, status);
+        if (status == BranchStatus.PhaseOne_Failed && applicationData != null) {
+            ActaOutcomes.recordFailure(xid, applicationData);
+        }
 
         if (LOGGER.isInfoEnabled()) {
             LOGGER.info(
