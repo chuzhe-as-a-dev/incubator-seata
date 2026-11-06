@@ -678,7 +678,9 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     private void voteNo() {
         if (reportStatusToTC(BranchStatus.PhaseOne_Failed, RootContext.getActaFailure())
                 && DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
-            recordActaNoVote(ACTA_NO_VOTE_VOTED);
+            if (recordActaNoVote(ACTA_NO_VOTE_VOTED)) {
+                RootContext.bindActaSettled();
+            }
             rollbackActaGlobalTransaction();
         }
     }
@@ -702,6 +704,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     private void recordActaAborted() {
         try (Connection connection = resource.getTargetDataSource().getConnection()) {
             ResourceManagerXA.updateActaPhaseTwo(connection, actaInputId, ResourceManagerXA.ACTA_PHASE2_ABORTED);
+            RootContext.bindActaSettled();
         } catch (SQLException e) {
             LOGGER.warn("Failed to record the abort of ACTA input {}", actaInputId, e);
         }

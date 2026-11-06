@@ -97,6 +97,8 @@ public class RootContext {
 
     public static final String KEY_ACTA_FAILURE = "TX_ACTA_FAILURE";
 
+    public static final String KEY_ACTA_SETTLED = "TX_ACTA_SETTLED";
+
     public static void setDefaultBranchType(BranchType defaultBranchType) {
         if (defaultBranchType != AT && defaultBranchType != XA) {
             throw new IllegalArgumentException("The default branch type must be " + AT + " or " + XA + "."
@@ -330,5 +332,18 @@ public class RootContext {
 
     public static void unbindActaFailure() {
         CONTEXT_HOLDER.remove(KEY_ACTA_FAILURE);
+    }
+
+    // The ACTA input's abort is durable, so the failure that surfaces leaves nothing to retry
+    public static void bindActaSettled() {
+        CONTEXT_HOLDER.put(KEY_ACTA_SETTLED, Boolean.TRUE);
+    }
+
+    public static boolean isActaSettled() {
+        return Boolean.TRUE.equals(CONTEXT_HOLDER.get(KEY_ACTA_SETTLED));
+    }
+
+    public static void unbindActaSettled() {
+        CONTEXT_HOLDER.remove(KEY_ACTA_SETTLED);
     }
 }
