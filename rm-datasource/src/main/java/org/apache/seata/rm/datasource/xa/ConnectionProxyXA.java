@@ -26,6 +26,7 @@ import org.apache.seata.core.exception.TransactionException;
 import org.apache.seata.core.exception.TransactionExceptionCode;
 import org.apache.seata.core.model.BranchStatus;
 import org.apache.seata.core.model.BranchType;
+import org.apache.seata.core.model.GlobalStatus;
 import org.apache.seata.rm.BaseDataSourceResource;
 import org.apache.seata.rm.DefaultResourceManager;
 import org.apache.seata.rm.datasource.util.SeataXAResource;
@@ -677,20 +678,20 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
 
     private void voteNo() {
         if (reportStatusToTC(BranchStatus.PhaseOne_Failed, RootContext.getActaFailure())
-                && DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
-            if (recordActaNoVote(ACTA_NO_VOTE_VOTED)) {
-                RootContext.bindActaSettled();
-            }
-            rollbackActaGlobalTransaction();
+                && DataSourceProxyXA.SHOULD_ENABLE_ACTA
+                && rollbackActaGlobalTransaction()
+                && recordActaNoVote(ACTA_NO_VOTE_VOTED)) {
+            RootContext.bindActaSettled();
         }
     }
 
     // The TC keeps a global transaction with a no vote open, so abort it as if the TC did
-    private void rollbackActaGlobalTransaction() {
+    private boolean rollbackActaGlobalTransaction() {
         try {
-            TransactionManagerHolder.get().rollback(xid);
+            return GlobalStatus.isRollbackDecided(TransactionManagerHolder.get().rollback(xid));
         } catch (TransactionException e) {
             LOGGER.warn("Failed to roll back {} after its no vote", xid, e);
+            return false;
         }
     }
 

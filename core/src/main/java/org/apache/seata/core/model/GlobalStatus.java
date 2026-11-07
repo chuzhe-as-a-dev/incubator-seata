@@ -235,4 +235,15 @@ public enum GlobalStatus {
         }
         return false;
     }
+
+    // Whether the global transaction rolls back, where a finished one that the TC no longer has counts as such
+    public static boolean isRollbackDecided(GlobalStatus status) {
+        return status == Rollbacking
+                || status == RollbackRetrying
+                || status == TimeoutRollbacking
+                || status == TimeoutRollbackRetrying
+                || status == Rollbacked
+                || status == TimeoutRollbacked
+                || status == Finished;
+    }
 }
