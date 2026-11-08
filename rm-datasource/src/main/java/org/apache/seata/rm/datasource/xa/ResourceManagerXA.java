@@ -30,11 +30,7 @@ import org.apache.seata.rm.datasource.AbstractDataSourceCacheResourceManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.sql.DataSource;
 import javax.transaction.xa.XAException;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
@@ -219,21 +215,16 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
         BranchStatus finished = committed ? BranchStatus.PhaseTwo_Committed : BranchStatus.PhaseTwo_Rollbacked;
         BranchStatus retry =
                 committed ? BranchStatus.PhaseTwo_CommitFailed_Retryable : BranchStatus.PhaseTwo_RollbackFailed_Retryable;
-        DataSource metadata = ((DataSourceProxyXA) resource).getActaMetadataDataSource();
+        ActaInbox inbox = ((DataSourceProxyXA) resource).getActaInbox();
         XAXid tid;
-        try (Connection connection = metadata.getConnection();
-                PreparedStatement statement = connection.prepareStatement("call acta_start_phase2(?, ?)")) {
-            statement.setLong(1, inputId);
-            statement.setInt(2, committed ? ACTA_PHASE2_COMMITTING : ACTA_PHASE2_ABORTING);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                resultSet.next();
-                if (!resultSet.getBoolean("started")) {
-                    return finished;
-                }
-                String latestTid = resultSet.getString("latest_tid");
-                tid = latestTid == null ? null : XAXidBuilder.parse(latestTid);
+        try {
+            ActaInbox.Phase2Start start =
+                    inbox.startPhase2(inputId, committed ? ACTA_PHASE2_COMMITTING : ACTA_PHASE2_ABORTING);
+            if (!start.isStarted()) {
+                return finished;
             }
-        } catch (SQLException e) {
+            tid = start.getLatestTid() == null ? null : XAXidBuilder.parse(start.getLatestTid());
+        } catch (RuntimeException e) {
             LOGGER.error("Failed to start phase 2 of ACTA input " + inputId, e);
             return retry;
         }
@@ -255,24 +246,13 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
             }
         }
         if (status == finished) {
-            try (Connection connection = metadata.getConnection()) {
-                updateActaPhaseTwo(connection, inputId, committed ? ACTA_PHASE2_COMMITTED : ACTA_PHASE2_ABORTED);
-            } catch (SQLException e) {
+            try {
+                inbox.recordPhase2(inputId, committed ? ACTA_PHASE2_COMMITTED : ACTA_PHASE2_ABORTED);
+            } catch (RuntimeException e) {
                 LOGGER.error("Failed to complete phase 2 of ACTA input " + inputId, e);
                 return retry;
             }
         }
         return status;
-    }
-
-    static int updateActaPhaseTwo(Connection connection, long inputId, int phase2) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "update acta_inbox set phase2 = ? where id = ? and (phase2 is null or phase2 not in (?, ?))")) {
-            statement.setInt(1, phase2);
-            statement.setLong(2, inputId);
-            statement.setInt(3, ACTA_PHASE2_COMMITTED);
-            statement.setInt(4, ACTA_PHASE2_ABORTED);
-            return statement.executeUpdate();
-        }
     }
 }

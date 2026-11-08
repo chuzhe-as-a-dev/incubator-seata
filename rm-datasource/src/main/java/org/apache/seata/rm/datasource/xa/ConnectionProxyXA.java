@@ -41,7 +41,6 @@ import javax.sql.XAConnection;
 import javax.transaction.xa.XAException;
 import javax.transaction.xa.XAResource;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -79,10 +78,6 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     private volatile boolean currentAutoCommitStatus = true;
 
     private volatile long branchId;
-
-    private static final int ACTA_NO_VOTE_VOTING = 0;
-
-    private static final int ACTA_NO_VOTE_VOTED = 1;
 
     private volatile long actaInputId;
 
@@ -363,7 +358,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             try {
                 start();
             } catch (XAException e) {
-                if (recordActaNoVote(ACTA_NO_VOTE_VOTING)) {
+                if (recordActaVotingNo()) {
                     voteNo();
                 }
                 cleanXABranchContext();
@@ -411,7 +406,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         if (!xaActive || this.xaBranchXid == null) {
             throw new SQLException("should NOT rollback on an inactive session");
         }
-        boolean votingNoRecorded = recordActaNoVote(ACTA_NO_VOTE_VOTING);
+        boolean votingNoRecorded = recordActaVotingNo();
         try {
             if (!rollBacked) {
                 try {
@@ -562,7 +557,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
             // The Seata 2.0.0 patch applied this cleanup only to PostgreSQL. It was later generalized to all
             // databases and may be overly broad; keep the current behavior unless an actual failure requires us to
             // revisit it.
-            boolean votingNoRecorded = recordActaNoVote(ACTA_NO_VOTE_VOTING);
+            boolean votingNoRecorded = recordActaVotingNo();
             originalConnection.rollback();
             originalConnection.setAutoCommit(true);
 
@@ -680,7 +675,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         if (reportStatusToTC(BranchStatus.PhaseOne_Failed, RootContext.getActaFailure())
                 && DataSourceProxyXA.SHOULD_ENABLE_ACTA
                 && rollbackActaGlobalTransaction()
-                && recordActaNoVote(ACTA_NO_VOTE_VOTED)) {
+                && recordActaVotedNo()) {
             RootContext.bindActaSettled();
         }
     }
@@ -703,28 +698,35 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     }
 
     private void recordActaAborted() {
-        try (Connection connection = ((DataSourceProxyXA) resource).getActaMetadataDataSource().getConnection()) {
-            ResourceManagerXA.updateActaPhaseTwo(connection, actaInputId, ResourceManagerXA.ACTA_PHASE2_ABORTED);
+        try {
+            ((DataSourceProxyXA) resource).getActaInbox().recordPhase2(actaInputId, ResourceManagerXA.ACTA_PHASE2_ABORTED);
             RootContext.bindActaSettled();
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             LOGGER.warn("Failed to record the abort of ACTA input {}", actaInputId, e);
         }
     }
 
     // Returns whether the no vote may follow, which needs a durable VOTING
-    private boolean recordActaNoVote(int noVote) {
+    private boolean recordActaVotingNo() {
         if (!DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
             return true;
         }
-        try (Connection connection = ((DataSourceProxyXA) resource).getActaMetadataDataSource().getConnection();
-                PreparedStatement statement =
-                        connection.prepareStatement("update acta_inbox set no_vote = ? where id = ?")) {
-            statement.setInt(1, noVote);
-            statement.setLong(2, actaInputId);
-            statement.executeUpdate();
+        try {
+            ((DataSourceProxyXA) resource).getActaInbox().recordVoting(actaInputId);
             return true;
-        } catch (SQLException e) {
-            LOGGER.error("Failed to record no vote {} of ACTA input {}", noVote, actaInputId, e);
+        } catch (RuntimeException e) {
+            LOGGER.error("Failed to record VOTING of ACTA input {}", actaInputId, e);
+            return false;
+        }
+    }
+
+    // Returns whether the no vote is recorded as done, which may wait for the application's batch
+    private boolean recordActaVotedNo() {
+        try {
+            ((DataSourceProxyXA) resource).getActaInbox().recordVoted(actaInputId);
+            return true;
+        } catch (RuntimeException e) {
+            LOGGER.error("Failed to record VOTED of ACTA input {}", actaInputId, e);
             return false;
         }
     }

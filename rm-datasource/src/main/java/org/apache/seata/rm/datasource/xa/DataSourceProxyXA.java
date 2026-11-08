@@ -76,8 +76,8 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
     // ACTA attempts by tid, from XA start until they prepare or roll back
     final ConcurrentMap<XAXid, ConnectionProxyXA> UNPREPARED_ACTA_ATTEMPTS = new ConcurrentHashMap<>();
 
-    // Where the ACTA metadata of this resource's branches lives, if not in the proxied data source
-    private volatile DataSource actaMetadataDataSource;
+    // The application's Inbox of this resource's branches, set before any ACTA branch runs
+    private volatile ActaInbox actaInbox;
 
     public DataSourceProxyXA(DataSource dataSource) {
         this(dataSource, DEFAULT_RESOURCE_GROUP_ID);
@@ -199,13 +199,15 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
         return dataSource.getConnection();
     }
 
-    public void setActaMetadataDataSource(DataSource actaMetadataDataSource) {
-        this.actaMetadataDataSource = actaMetadataDataSource;
+    public void setActaInbox(ActaInbox actaInbox) {
+        this.actaInbox = actaInbox;
     }
 
-    // The ACTA metadata data source, which defaults to the proxied one
-    DataSource getActaMetadataDataSource() {
-        return actaMetadataDataSource != null ? actaMetadataDataSource : dataSource;
+    ActaInbox getActaInbox() {
+        if (actaInbox == null) {
+            throw new IllegalStateException("ACTA is enabled without an Inbox for " + resourceId);
+        }
+        return actaInbox;
     }
 
     boolean abortUnpreparedActaAttempt(XAXid tid) {
