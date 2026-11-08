@@ -34,7 +34,9 @@ import static org.apache.seata.common.DefaultValues.DEFAULT_ACTA_ENABLED;
 // Publishes the outcomes of ACTA global transactions through Redis to the benchmark waiting for them
 public final class ActaOutcomes {
     private static final Logger LOGGER = LoggerFactory.getLogger(ActaOutcomes.class);
+    // The benchmark's ActaConstants.OUTCOMES_CHANNEL
     private static final String CHANNEL = "acta:outcomes";
+    // The benchmark names its ACTA global transactions acta-micro and acta-tpcc
     private static final String ACTA_TRANSACTION_NAME_PREFIX = "acta-";
     // Null unless ACTA is enabled
     private static JedisPool redis;
@@ -46,7 +48,11 @@ public final class ActaOutcomes {
     public static void init() {
         Configuration config = ConfigurationFactory.getInstance();
         if (config.getBoolean(ACTA_ENABLED, DEFAULT_ACTA_ENABLED)) {
-            redis = new JedisPool(URI.create(config.getConfig(ACTA_REDIS)));
+            String uri = config.getConfig(ACTA_REDIS);
+            if (uri == null || uri.isBlank()) {
+                throw new IllegalStateException(ACTA_REDIS + " is required when " + ACTA_ENABLED + " is true");
+            }
+            redis = new JedisPool(URI.create(uri));
         }
     }
 
