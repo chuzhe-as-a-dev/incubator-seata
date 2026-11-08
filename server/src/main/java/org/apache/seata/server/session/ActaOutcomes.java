@@ -57,8 +57,8 @@ public final class ActaOutcomes {
         }
     }
 
-    // The message is "<xid>,<outcome>"
-    static void publish(GlobalSession session, String outcome) {
+    // The message is "<xid>,<outcome>", sent once the TC has recorded its decision
+    public static void publish(GlobalSession session, String outcome) {
         String failure = FAILURES.remove(session.getXid());
         String name = session.getTransactionName();
         if (redis == null || name == null || !name.startsWith(ACTA_TRANSACTION_NAME_PREFIX)) {

@@ -57,6 +57,7 @@ import org.apache.seata.core.rpc.netty.NettyRemotingServer;
 import org.apache.seata.server.AbstractTCInboundHandler;
 import org.apache.seata.server.limit.LimitRequestDecorator;
 import org.apache.seata.server.metrics.MetricsPublisher;
+import org.apache.seata.server.session.ActaOutcomes;
 import org.apache.seata.server.session.BranchSession;
 import org.apache.seata.server.session.GlobalSession;
 import org.apache.seata.server.session.SessionCondition;
@@ -432,6 +433,7 @@ public class DefaultCoordinator extends AbstractTCInboundHandler implements Tran
 
                 globalSession.close();
                 globalSession.changeGlobalStatus(GlobalStatus.TimeoutRollbacking);
+                ActaOutcomes.publish(globalSession, "ABORTED");
 
                 // transaction timeout and start rollbacking event
                 MetricsPublisher.postSessionDoingEvent(

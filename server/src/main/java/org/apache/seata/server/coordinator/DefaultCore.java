@@ -29,6 +29,7 @@ import org.apache.seata.core.model.BranchType;
 import org.apache.seata.core.model.GlobalStatus;
 import org.apache.seata.core.rpc.RemotingServer;
 import org.apache.seata.server.metrics.MetricsPublisher;
+import org.apache.seata.server.session.ActaOutcomes;
 import org.apache.seata.server.session.BranchSession;
 import org.apache.seata.server.session.GlobalSession;
 import org.apache.seata.server.session.SessionHelper;
@@ -256,6 +257,7 @@ public class DefaultCore implements Core {
                     MetricsPublisher.postSessionDoneEvent(globalSession, GlobalStatus.Committed, false, false);
                 } else {
                     globalSession.changeGlobalStatus(GlobalStatus.Committing);
+                    ActaOutcomes.publish(globalSession, "COMMITTED");
                     shouldCommitNow = true;
                 }
                 // clean session after changing status successfully.
@@ -407,6 +409,7 @@ public class DefaultCore implements Core {
             globalSession.close(); // Highlight: Firstly, close the session, then no more branch can be registered.
             if (globalSession.getStatus() == GlobalStatus.Begin) {
                 globalSession.changeGlobalStatus(GlobalStatus.Rollbacking);
+                ActaOutcomes.publish(globalSession, "ABORTED");
                 return true;
             }
             return false;
