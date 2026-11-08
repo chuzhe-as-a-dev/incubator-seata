@@ -219,7 +219,7 @@ public class ResourceManagerXA extends AbstractDataSourceCacheResourceManager {
         BranchStatus finished = committed ? BranchStatus.PhaseTwo_Committed : BranchStatus.PhaseTwo_Rollbacked;
         BranchStatus retry =
                 committed ? BranchStatus.PhaseTwo_CommitFailed_Retryable : BranchStatus.PhaseTwo_RollbackFailed_Retryable;
-        DataSource metadata = resource.getTargetDataSource();
+        DataSource metadata = ((DataSourceProxyXA) resource).getActaMetadataDataSource();
         XAXid tid;
         try (Connection connection = metadata.getConnection();
                 PreparedStatement statement = connection.prepareStatement("call acta_start_phase2(?, ?)")) {

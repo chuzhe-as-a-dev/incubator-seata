@@ -703,7 +703,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
     }
 
     private void recordActaAborted() {
-        try (Connection connection = resource.getTargetDataSource().getConnection()) {
+        try (Connection connection = ((DataSourceProxyXA) resource).getActaMetadataDataSource().getConnection()) {
             ResourceManagerXA.updateActaPhaseTwo(connection, actaInputId, ResourceManagerXA.ACTA_PHASE2_ABORTED);
             RootContext.bindActaSettled();
         } catch (SQLException e) {
@@ -716,7 +716,7 @@ public class ConnectionProxyXA extends AbstractConnectionProxyXA implements Hold
         if (!DataSourceProxyXA.SHOULD_ENABLE_ACTA) {
             return true;
         }
-        try (Connection connection = resource.getTargetDataSource().getConnection();
+        try (Connection connection = ((DataSourceProxyXA) resource).getActaMetadataDataSource().getConnection();
                 PreparedStatement statement =
                         connection.prepareStatement("update acta_inbox set no_vote = ? where id = ?")) {
             statement.setInt(1, noVote);

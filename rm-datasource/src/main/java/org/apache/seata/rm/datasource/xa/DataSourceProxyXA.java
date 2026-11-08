@@ -76,6 +76,9 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
     // ACTA attempts by tid, from XA start until they prepare or roll back
     final ConcurrentMap<XAXid, ConnectionProxyXA> UNPREPARED_ACTA_ATTEMPTS = new ConcurrentHashMap<>();
 
+    // Where the ACTA metadata of this resource's branches lives, if not in the proxied data source
+    private volatile DataSource actaMetadataDataSource;
+
     public DataSourceProxyXA(DataSource dataSource) {
         this(dataSource, DEFAULT_RESOURCE_GROUP_ID);
     }
@@ -194,6 +197,15 @@ public class DataSourceProxyXA extends AbstractDataSourceProxyXA {
         }
 
         return dataSource.getConnection();
+    }
+
+    public void setActaMetadataDataSource(DataSource actaMetadataDataSource) {
+        this.actaMetadataDataSource = actaMetadataDataSource;
+    }
+
+    // The ACTA metadata data source, which defaults to the proxied one
+    DataSource getActaMetadataDataSource() {
+        return actaMetadataDataSource != null ? actaMetadataDataSource : dataSource;
     }
 
     boolean abortUnpreparedActaAttempt(XAXid tid) {
