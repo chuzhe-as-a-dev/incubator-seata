@@ -17,7 +17,6 @@
 package org.apache.seata.core.rpc.netty;
 
 import io.netty.channel.Channel;
-import org.apache.seata.common.thread.NamedThreadFactory;
 import org.apache.seata.core.protocol.MessageType;
 import org.apache.seata.core.rpc.ShutdownHook;
 import org.apache.seata.core.rpc.TransactionMessageHandler;
@@ -29,9 +28,8 @@ import org.apache.seata.core.rpc.processor.server.ServerOnResponseProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -46,14 +44,8 @@ public class NettyRemotingServer extends AbstractNettyRemotingServer {
 
     private final AtomicBoolean initialized = new AtomicBoolean(false);
 
-    private final ThreadPoolExecutor branchResultMessageExecutor = new ThreadPoolExecutor(
-            NettyServerConfig.getMinBranchResultPoolSize(),
-            NettyServerConfig.getMaxBranchResultPoolSize(),
-            NettyServerConfig.getKeepAliveTime(),
-            TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(NettyServerConfig.getMaxTaskQueueSize()),
-            new NamedThreadFactory("BranchResultHandlerThread", NettyServerConfig.getMaxBranchResultPoolSize()),
-            new ThreadPoolExecutor.CallerRunsPolicy());
+    private final ExecutorService branchResultMessageExecutor = Executors.newThreadPerTaskExecutor(
+            Thread.ofVirtual().name("BranchResultHandlerThread_", 0).factory());
 
     @Override
     public void init() {
@@ -69,11 +61,11 @@ public class NettyRemotingServer extends AbstractNettyRemotingServer {
      *
      * @param messageExecutor   the message executor
      */
-    public NettyRemotingServer(ThreadPoolExecutor messageExecutor) {
+    public NettyRemotingServer(ExecutorService messageExecutor) {
         super(messageExecutor, new NettyServerConfig());
     }
 
-    public NettyRemotingServer(ThreadPoolExecutor messageExecutor, NettyServerConfig nettyServerConfig) {
+    public NettyRemotingServer(ExecutorService messageExecutor, NettyServerConfig nettyServerConfig) {
         super(messageExecutor, nettyServerConfig);
     }
 

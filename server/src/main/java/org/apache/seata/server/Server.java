@@ -18,13 +18,11 @@ package org.apache.seata.server;
 
 import org.apache.seata.common.XID;
 import org.apache.seata.common.holder.ObjectHolder;
-import org.apache.seata.common.thread.NamedThreadFactory;
 import org.apache.seata.common.util.NetUtil;
 import org.apache.seata.common.util.StringUtils;
 import org.apache.seata.common.util.UUIDGenerator;
 import org.apache.seata.config.ConfigurationFactory;
 import org.apache.seata.core.rpc.netty.NettyRemotingServer;
-import org.apache.seata.core.rpc.netty.NettyServerConfig;
 import org.apache.seata.server.coordinator.DefaultCoordinator;
 import org.apache.seata.server.instance.SeataInstanceStrategy;
 import org.apache.seata.server.lock.LockerManagerFactory;
@@ -38,9 +36,8 @@ import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 import java.util.Optional;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static org.apache.seata.common.Constants.OBJECT_KEY_SPRING_APPLICATION_CONTEXT;
 import static org.apache.seata.spring.boot.autoconfigure.StarterConstants.REGEX_SPLIT_CHAR;
@@ -69,14 +66,9 @@ public class Server {
         // initialize the metrics
         MetricsManager.get().init();
 
-        ThreadPoolExecutor workingThreads = new ThreadPoolExecutor(
-                NettyServerConfig.getMinServerPoolSize(),
-                NettyServerConfig.getMaxServerPoolSize(),
-                NettyServerConfig.getKeepAliveTime(),
-                TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(NettyServerConfig.getMaxTaskQueueSize()),
-                new NamedThreadFactory("ServerHandlerThread", NettyServerConfig.getMaxServerPoolSize()),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+        // A request blocks on its branches' phase 2, which a virtual thread per request does without sizing a pool
+        ExecutorService workingThreads = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("ServerHandlerThread_", 0).factory());
 
         // 127.0.0.1 and 0.0.0.0 are not valid here.
         if (NetUtil.isValidIp(parameterParser.getHost(), false)) {

@@ -20,7 +20,6 @@ import io.netty.channel.Channel;
 import org.apache.seata.common.DefaultValues;
 import org.apache.seata.common.exception.FrameworkErrorCode;
 import org.apache.seata.common.exception.FrameworkException;
-import org.apache.seata.common.thread.NamedThreadFactory;
 import org.apache.seata.common.util.StringUtils;
 import org.apache.seata.config.CachedConfigurationChangeListener;
 import org.apache.seata.config.Configuration;
@@ -44,9 +43,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
@@ -62,8 +60,6 @@ public final class RmNettyRemotingClient extends AbstractNettyRemotingClient {
     private ResourceManager resourceManager;
     private static volatile RmNettyRemotingClient instance;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
-    private static final long KEEP_ALIVE_TIME = Integer.MAX_VALUE;
-    private static final int MAX_QUEUE_SIZE = 20000;
     private String applicationId;
     private String transactionServiceGroup;
 
@@ -111,7 +107,7 @@ public final class RmNettyRemotingClient extends AbstractNettyRemotingClient {
         });
     }
 
-    private RmNettyRemotingClient(NettyClientConfig nettyClientConfig, ThreadPoolExecutor messageExecutor) {
+    private RmNettyRemotingClient(NettyClientConfig nettyClientConfig, ExecutorService messageExecutor) {
         super(nettyClientConfig, messageExecutor, TransactionRole.RMROLE);
         // set enableClientBatchSendRequest
         Configuration configuration = ConfigurationFactory.getInstance();
@@ -159,16 +155,10 @@ public final class RmNettyRemotingClient extends AbstractNettyRemotingClient {
             synchronized (RmNettyRemotingClient.class) {
                 if (instance == null) {
                     NettyClientConfig nettyClientConfig = new NettyClientConfig();
-                    final ThreadPoolExecutor messageExecutor = new ThreadPoolExecutor(
-                            nettyClientConfig.getClientWorkerThreads(),
-                            nettyClientConfig.getClientWorkerThreads(),
-                            KEEP_ALIVE_TIME,
-                            TimeUnit.SECONDS,
-                            new LinkedBlockingQueue<>(MAX_QUEUE_SIZE),
-                            new NamedThreadFactory(
-                                    nettyClientConfig.getRmDispatchThreadPrefix(),
-                                    nettyClientConfig.getClientWorkerThreads()),
-                            new ThreadPoolExecutor.CallerRunsPolicy());
+                    // Phase 2 blocks on the database, which a virtual thread per request does without sizing a pool
+                    final ExecutorService messageExecutor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual()
+                            .name(nettyClientConfig.getRmDispatchThreadPrefix() + "_", 0)
+                            .factory());
                     instance = new RmNettyRemotingClient(nettyClientConfig, messageExecutor);
                 }
             }

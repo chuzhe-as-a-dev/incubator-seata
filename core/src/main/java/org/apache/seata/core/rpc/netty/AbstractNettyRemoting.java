@@ -50,7 +50,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.Condition;
@@ -72,7 +71,7 @@ public abstract class AbstractNettyRemoting implements Disposable {
     /**
      * The Message executor.
      */
-    protected final ThreadPoolExecutor messageExecutor;
+    protected final ExecutorService messageExecutor;
 
     /**
      * Id generator of this remoting
@@ -143,7 +142,7 @@ public abstract class AbstractNettyRemoting implements Disposable {
                 TimeUnit.MILLISECONDS);
     }
 
-    public AbstractNettyRemoting(ThreadPoolExecutor messageExecutor) {
+    public AbstractNettyRemoting(ExecutorService messageExecutor) {
         this.messageExecutor = messageExecutor;
     }
 
@@ -323,7 +322,7 @@ public abstract class AbstractNettyRemoting implements Disposable {
                     } catch (RejectedExecutionException e) {
                         LOGGER.error(
                                 FrameworkErrorCode.ThreadPoolFull.getErrCode(),
-                                "thread pool is full, current max pool size is " + messageExecutor.getActiveCount());
+                                "thread pool is full");
                         if (allowDumpStack) {
                             String name = ManagementFactory.getRuntimeMXBean().getName();
                             String pid = name.split("@")[0];
